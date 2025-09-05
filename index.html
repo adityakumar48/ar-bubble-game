@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1, user-scalable=no"
     />
-    <title>AR Balloon Pop Game</title>
+    <title>AR Bubble Pop Game</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
@@ -230,9 +230,9 @@
   <body>
     <!-- Start Screen -->
     <div id="start-screen">
-      <h1>🎈 AR Balloon Pop</h1>
+      <h1>🫧 AR Bubble Pop</h1>
       <p>
-        Use your finger to pop balloons in AR space!<br />Point your camera and
+        Use your finger to pop bubbles in AR space!<br />Point your camera and
         show your hand to play.
       </p>
       <button
@@ -248,7 +248,7 @@
       <!-- Camera feed -->
       <video id="camera-feed" autoplay muted playsinline></video>
 
-      <!-- Game canvas for balloons and hand skeleton -->
+      <!-- Game canvas for bubbles and hand skeleton -->
       <canvas id="game-canvas"></canvas>
 
       <!-- UI Overlay -->
@@ -260,7 +260,7 @@
             <span id="hand-status">Initializing...</span>
           </div>
           <div style="margin-top: 8px">
-            🎯 <strong>Aim:</strong> Point finger at balloons
+            🎯 <strong>Aim:</strong> Point finger at bubbles
           </div>
           <div style="margin-top: 8px">
             💥 <strong>Pop:</strong> Make "pinch" gesture
@@ -270,10 +270,10 @@
         <!-- Game Stats -->
         <div id="game-stats">
           <div class="score" id="score">0</div>
-          <div style="margin-top: 5px">Balloons Popped</div>
+          <div style="margin-top: 5px">Bubbles Popped</div>
           <div style="margin-top: 10px; font-size: 12px">
             <div>Time: <span id="game-time">0:00</span></div>
-            <div>Balloons: <span id="balloon-count">0</span></div>
+            <div>Bubbles: <span id="balloon-count">0</span></div>
           </div>
         </div>
 
@@ -297,7 +297,7 @@
     </div>
 
     <script>
-      class BalloonPopGame {
+      class BubblePopGame {
         constructor() {
           this.hands = null;
           this.camera = null;
@@ -315,14 +315,14 @@
           this.score = 0;
           this.gameTime = 0;
           this.gameStartTime = 0;
-          this.balloons = [];
+          this.bubbles = [];
           this.handLandmarks = null;
           this.lastPinchState = false;
 
           // Game settings
-          this.maxBalloons = 8;
-          this.balloonSpawnRate = 0.02; // Probability per frame
-          this.balloonSpeed = 1;
+          this.maxBubbles = 8;
+          this.bubbleSpawnRate = 0.02; // Probability per frame
+          this.bubbleSpeed = 1;
 
           // Hand gesture detection
           this.fingerTipIndex = 8; // Index finger tip
@@ -381,6 +381,60 @@
           this.canvasElement.height = window.innerHeight;
         }
         
+        showErrorMessage(message) {
+          // Create a modal for error message
+          const modal = document.createElement('div');
+          modal.style.position = 'fixed';
+          modal.style.top = '0';
+          modal.style.left = '0';
+          modal.style.width = '100%';
+          modal.style.height = '100%';
+          modal.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+          modal.style.display = 'flex';
+          modal.style.flexDirection = 'column';
+          modal.style.justifyContent = 'center';
+          modal.style.alignItems = 'center';
+          modal.style.zIndex = '1000';
+          
+          // Create message container
+          const messageContainer = document.createElement('div');
+          messageContainer.style.backgroundColor = 'white';
+          messageContainer.style.padding = '20px';
+          messageContainer.style.borderRadius = '10px';
+          messageContainer.style.maxWidth = '80%';
+          messageContainer.style.textAlign = 'center';
+          
+          // Add error icon
+          const errorIcon = document.createElement('div');
+          errorIcon.innerHTML = '❌';
+          errorIcon.style.fontSize = '48px';
+          errorIcon.style.marginBottom = '15px';
+          messageContainer.appendChild(errorIcon);
+          
+          // Add message text
+          const messageText = document.createElement('div');
+          messageText.textContent = message;
+          messageText.style.marginBottom = '20px';
+          messageContainer.appendChild(messageText);
+          
+          // Add OK button
+          const okButton = document.createElement('button');
+          okButton.textContent = 'OK';
+          okButton.style.padding = '10px 20px';
+          okButton.style.backgroundColor = '#4ECDC4';
+          okButton.style.color = 'white';
+          okButton.style.border = 'none';
+          okButton.style.borderRadius = '5px';
+          okButton.style.cursor = 'pointer';
+          okButton.onclick = () => {
+            document.body.removeChild(modal);
+          };
+          messageContainer.appendChild(okButton);
+          
+          modal.appendChild(messageContainer);
+          document.body.appendChild(modal);
+        }
+        
         isMobileDevice() {
           // Check if the device is mobile based on user agent or screen size
           const userAgent = navigator.userAgent.toLowerCase();
@@ -397,6 +451,300 @@
           
           // Return true if any of the checks indicate a mobile device
           return isMobileByUA || (isMobileBySize && isTouchDevice);
+        }
+        
+        async showCameraSelectionDialog() {
+          // Create a modal dialog for camera selection
+          const modal = document.createElement('div');
+          modal.style.position = 'fixed';
+          modal.style.top = '0';
+          modal.style.left = '0';
+          modal.style.width = '100%';
+          modal.style.height = '100%';
+          modal.style.backgroundColor = 'rgba(0,0,0,0.8)';
+          modal.style.zIndex = '1000';
+          modal.style.display = 'flex';
+          modal.style.flexDirection = 'column';
+          modal.style.justifyContent = 'center';
+          modal.style.alignItems = 'center';
+          modal.style.color = 'white';
+          modal.style.fontFamily = 'Arial, sans-serif';
+          modal.style.padding = '20px';
+          
+          // Add title
+          const title = document.createElement('h2');
+          title.textContent = 'Select Camera';
+          title.style.marginBottom = '20px';
+          modal.appendChild(title);
+          
+          // Add loading indicator
+          const loadingText = document.createElement('div');
+          loadingText.textContent = 'Loading available cameras...';
+          loadingText.style.marginBottom = '20px';
+          modal.appendChild(loadingText);
+          
+          // Add container for camera buttons
+          const buttonContainer = document.createElement('div');
+          buttonContainer.style.display = 'flex';
+          buttonContainer.style.flexDirection = 'column';
+          buttonContainer.style.width = '80%';
+          buttonContainer.style.maxWidth = '300px';
+          modal.appendChild(buttonContainer);
+          
+          // Add close button
+          const closeButton = document.createElement('button');
+          closeButton.textContent = 'Cancel';
+          closeButton.style.padding = '10px';
+          closeButton.style.marginTop = '20px';
+          closeButton.style.backgroundColor = '#555';
+          closeButton.style.border = 'none';
+          closeButton.style.borderRadius = '5px';
+          closeButton.style.color = 'white';
+          closeButton.style.cursor = 'pointer';
+          closeButton.onclick = () => {
+            document.body.removeChild(modal);
+            // Re-enable the switch camera button
+            const switchBtn = document.getElementById('switchCamera');
+            if (switchBtn) {
+              switchBtn.disabled = false;
+              switchBtn.textContent = this.currentFacingMode.includes('user') ? '📷 Switch to Back Camera' : '📷 Switch to Front Camera';
+            }
+          };
+          modal.appendChild(closeButton);
+          
+          // Add the modal to the page
+          document.body.appendChild(modal);
+          
+          try {
+            // Get list of video devices
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            
+            // Remove loading text
+            modal.removeChild(loadingText);
+            
+            if (videoDevices.length === 0) {
+              const noDevicesText = document.createElement('div');
+              noDevicesText.textContent = 'No cameras found';
+              noDevicesText.style.marginBottom = '20px';
+              buttonContainer.appendChild(noDevicesText);
+              return;
+            }
+            
+            // Add instruction text
+            const instructionText = document.createElement('div');
+            instructionText.textContent = 'Select a camera:';
+            instructionText.style.marginBottom = '15px';
+            instructionText.style.textAlign = 'center';
+            buttonContainer.appendChild(instructionText);
+            
+            // Create a button for each camera
+            for (let i = 0; i < videoDevices.length; i++) {
+              const device = videoDevices[i];
+              const button = document.createElement('button');
+              
+              // Try to identify camera type from label
+              const label = device.label || `Camera ${i+1}`;
+              let cameraType = '';
+              
+              if (label.toLowerCase().includes('back') || 
+                  label.toLowerCase().includes('rear') || 
+                  label.toLowerCase().includes('environment')) {
+                cameraType = ' (Back Camera)';
+              } else if (label.toLowerCase().includes('front') || 
+                         label.toLowerCase().includes('user') || 
+                         label.toLowerCase().includes('selfie')) {
+                cameraType = ' (Front Camera)';
+              }
+              
+              button.textContent = `${label}${cameraType}`;
+              button.style.padding = '15px';
+              button.style.marginBottom = '10px';
+              button.style.backgroundColor = '#007bff';
+              button.style.border = 'none';
+              button.style.borderRadius = '5px';
+              button.style.color = 'white';
+              button.style.cursor = 'pointer';
+              button.style.textAlign = 'left';
+              button.style.wordBreak = 'break-word';
+              
+              // Add click handler to select this camera
+              button.onclick = async () => {
+                try {
+                  // Store this camera as preferred
+                  localStorage.setItem('preferredCameraId', device.deviceId);
+                  localStorage.setItem('preferredCameraLabel', device.label || `Camera ${i+1}`);
+                  
+                  // Determine facing mode from label for better tracking
+                  if (label.toLowerCase().includes('back') || 
+                      label.toLowerCase().includes('rear') || 
+                      label.toLowerCase().includes('environment')) {
+                    this.currentFacingMode = 'environment';
+                  } else if (label.toLowerCase().includes('front') || 
+                             label.toLowerCase().includes('user') || 
+                             label.toLowerCase().includes('selfie')) {
+                    this.currentFacingMode = 'user';
+                  } else {
+                    // If we can't determine from label, use opposite of current
+                    this.currentFacingMode = this.currentFacingMode.includes('user') ? 'environment' : 'user';
+                  }
+                  
+                  console.log(`Selected camera: ${label}, setting facing mode to: ${this.currentFacingMode}`);
+                  
+                  // Remove the modal
+                  document.body.removeChild(modal);
+                  
+                  // Stop current camera
+                  if (this.videoElement.srcObject) {
+                    const tracks = this.videoElement.srcObject.getTracks();
+                    tracks.forEach(track => {
+                      track.stop();
+                      console.log(`Stopped track: ${track.kind}`);
+                    });
+                    this.videoElement.srcObject = null;
+                  }
+                  
+                  // Stop MediaPipe camera
+                  if (this.camera) {
+                    try {
+                      await this.camera.stop();
+                      this.camera = null;
+                      console.log('Stopped MediaPipe camera');
+                    } catch (e) {
+                      console.warn('Error stopping MediaPipe camera:', e);
+                    }
+                  }
+                  
+                  // Show status message
+                  const statusElement = document.createElement('div');
+                  statusElement.textContent = `Switching to ${label}...`;
+                  statusElement.style.position = 'fixed';
+                  statusElement.style.top = '50%';
+                  statusElement.style.left = '50%';
+                  statusElement.style.transform = 'translate(-50%, -50%)';
+                  statusElement.style.backgroundColor = 'rgba(0,0,0,0.7)';
+                  statusElement.style.color = 'white';
+                  statusElement.style.padding = '10px 20px';
+                  statusElement.style.borderRadius = '20px';
+                  statusElement.style.zIndex = '1000';
+                  document.body.appendChild(statusElement);
+                  
+                  // Wait a moment to ensure resources are released
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  
+                  // Start camera with the selected device
+                  try {
+                    const constraints = {
+                      video: {
+                        deviceId: { exact: device.deviceId },
+                        width: { ideal: 640, max: 1280 },
+                        height: { ideal: 480, max: 720 }
+                      },
+                      audio: false
+                    };
+                    
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    this.videoElement.srcObject = stream;
+                    
+                    await new Promise((resolve) => {
+                      this.videoElement.onloadedmetadata = () => {
+                        this.videoElement.play()
+                          .then(resolve)
+                          .catch(e => {
+                            console.error('Error playing video:', e);
+                            resolve(); // Continue anyway
+                          });
+                      };
+                      setTimeout(resolve, 3000); // Timeout fallback
+                    });
+                    
+                    // Update MediaPipe selfieMode based on current camera mode
+                    if (this.hands) {
+                      const isFrontCamera = this.currentFacingMode.includes('user');
+                      await this.hands.setOptions({
+                        maxNumHands: 1,
+                        modelComplexity: 1,
+                        minDetectionConfidence: 0.5,
+                        minTrackingConfidence: 0.5,
+                        selfieMode: isFrontCamera
+                      });
+                      console.log(`MediaPipe selfieMode updated to: ${isFrontCamera} for ${this.currentFacingMode} camera`);
+                    }
+                    
+                    // Create camera object for MediaPipe
+                    this.camera = new Camera(this.videoElement, {
+                      onFrame: async () => {
+                        if (this.hands && this.isTracking) {
+                          await this.hands.send({ image: this.videoElement });
+                        }
+                      },
+                      width: 640,
+                      height: 480
+                    });
+                    
+                    await this.camera.start();
+                    console.log('Started camera with selected device');
+                    
+                    // Update button text
+                    const switchBtn = document.getElementById('switchCamera');
+                    if (switchBtn) {
+                      switchBtn.disabled = false;
+                      switchBtn.textContent = this.currentFacingMode.includes('user') ? '📷 Switch to Back Camera' : '📷 Switch to Front Camera';
+                    }
+                    
+                    // Remove status element
+                    document.body.removeChild(statusElement);
+                    
+                  } catch (error) {
+                    console.error('Error starting camera with selected device:', error);
+                    
+                    // Update status message
+                    statusElement.textContent = `Error: ${error.message}`;
+                    setTimeout(() => {
+                      if (document.body.contains(statusElement)) {
+                        document.body.removeChild(statusElement);
+                      }
+                    }, 3000);
+                    
+                    // Re-enable the switch camera button
+                    const switchBtn = document.getElementById('switchCamera');
+                    if (switchBtn) {
+                      switchBtn.disabled = false;
+                      switchBtn.textContent = this.currentFacingMode.includes('user') ? '📷 Switch to Back Camera' : '📷 Switch to Front Camera';
+                    }
+                  }
+                  
+                } catch (error) {
+                  console.error('Error in camera selection:', error);
+                  
+                  // Re-enable the switch camera button
+                  const switchBtn = document.getElementById('switchCamera');
+                  if (switchBtn) {
+                    switchBtn.disabled = false;
+                    switchBtn.textContent = this.currentFacingMode.includes('user') ? '📷 Switch to Back Camera' : '📷 Switch to Front Camera';
+                  }
+                }
+              };
+              
+              buttonContainer.appendChild(button);
+            }
+            
+          } catch (error) {
+            console.error('Error enumerating devices:', error);
+            
+            const errorText = document.createElement('div');
+            errorText.textContent = `Error: ${error.message}`;
+            errorText.style.marginBottom = '20px';
+            errorText.style.color = 'red';
+            buttonContainer.appendChild(errorText);
+            
+            // Re-enable the switch camera button
+            const switchBtn = document.getElementById('switchCamera');
+            if (switchBtn) {
+              switchBtn.disabled = false;
+              switchBtn.textContent = this.currentFacingMode.includes('user') ? '📷 Switch to Back Camera' : '📷 Switch to Front Camera';
+            }
+          }
         }
 
         async startGame() {
@@ -497,6 +845,16 @@
 
         async startCamera() {
           try {
+            // Request camera permission at the beginning
+            try {
+              await navigator.mediaDevices.getUserMedia({ video: true });
+              console.log("Camera permission granted");
+            } catch (permissionError) {
+              console.error("Camera permission denied:", permissionError);
+              this.showErrorMessage("Camera permission required! Please allow camera access and try again.");
+              throw new Error("Camera permission denied");
+            }
+            
             // Stop existing stream if any
             if (this.videoElement.srcObject) {
               const tracks = this.videoElement.srcObject.getTracks();
@@ -538,13 +896,13 @@
               // Otherwise use facing mode as before
               exactConstraints = {
                 video: {
-                  facingMode: { exact: this.currentFacingMode },
+                  facingMode: { ideal: this.currentFacingMode }, // Changed from exact to ideal for better compatibility
                   width: { ideal: 640, max: 1280 },
                   height: { ideal: 480, max: 720 },
                 },
                 audio: false, // Explicitly disable audio to avoid permission issues
               };
-              console.log('Using facing mode for constraints');
+              console.log(`Using ideal facingMode constraint: ${this.currentFacingMode}`);
             }
 
             let stream;
@@ -761,7 +1119,13 @@
             const handStatus = document.getElementById('hand-status-indicator');
             if (handStatus && this.isTracking) {
               if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                handStatus.textContent = 'Detected';
+                // Check if handedness information is available
+                if (results.multiHandedness && results.multiHandedness.length > 0) {
+                  const handType = results.multiHandedness[0].label;
+                  handStatus.textContent = `Detected (${handType})`;
+                } else {
+                  handStatus.textContent = 'Detected';
+                }
                 handStatus.style.color = '#4CAF50'; // Green for active detection
               } else {
                 handStatus.textContent = 'Active';
@@ -776,9 +1140,17 @@
             results.multiHandLandmarks.length > 0
           ) {
             this.handLandmarks = results.multiHandLandmarks[0];
+            
+            // Store handedness information if available
+            if (results.multiHandedness && results.multiHandedness.length > 0) {
+              this.handType = results.multiHandedness[0].label; // 'Left' or 'Right'
+              console.log(`Detected ${this.handType} hand`);
+            }
+            
             this.detectPinchGesture();
           } else {
             this.handLandmarks = null;
+            this.handType = null;
           }
         }
 
@@ -807,34 +1179,48 @@
         }
 
         onPinchGesture(fingerPosition) {
-          const fingerX = fingerPosition.x * this.canvasElement.width;
-          const fingerY = fingerPosition.y * this.canvasElement.height;
+          const width = this.canvasElement.width;
+          const height = this.canvasElement.height;
+          
+          // Use the same flipping logic as in drawHandSkeleton
+          const isFrontCamera = this.currentFacingMode.includes('user');
+          const isRightHand = this.handType === 'Right';
+          
+          let shouldFlipX;
+          if (isFrontCamera) {
+            shouldFlipX = !isRightHand; // Flip for left hand in front camera
+          } else {
+            shouldFlipX = true; // Always flip for back camera
+          }
+          
+          const fingerX = shouldFlipX ? width - (fingerPosition.x * width) : fingerPosition.x * width;
+          const fingerY = fingerPosition.y * height;
 
-          // Check if finger is pointing at any balloon
-          for (let i = this.balloons.length - 1; i >= 0; i--) {
-            const balloon = this.balloons[i];
+          // Check if finger is pointing at any bubble
+          for (let i = this.bubbles.length - 1; i >= 0; i--) {
+            const bubble = this.bubbles[i];
             const distance = Math.sqrt(
-              Math.pow(fingerX - balloon.x, 2) +
-                Math.pow(fingerY - balloon.y, 2)
+              Math.pow(fingerX - bubble.x, 2) +
+              Math.pow(fingerY - bubble.y, 2)
             );
 
-            if (distance < balloon.radius) {
-              // Pop the balloon!
-              this.popBalloon(i, fingerX, fingerY);
-              break; // Only pop one balloon per gesture
+            if (distance < bubble.radius) {
+              // Pop the bubble!
+              this.popBubble(i, fingerX, fingerY);
+              break; // Only pop one bubble per gesture
             }
           }
         }
 
-        popBalloon(index, x, y) {
-          this.balloons.splice(index, 1);
+        popBubble(index, x, y) {
+          this.bubbles.splice(index, 1);
           this.score++;
           document.getElementById("score").textContent = this.score;
 
           // Create celebration effect
           this.createCelebration(x, y);
 
-          // Play pop sound effect (if you want to add audio later)
+          // Create bubble pop effect
           this.createPopEffect(x, y);
         }
 
@@ -852,15 +1238,16 @@
         }
 
         createPopEffect(x, y) {
-          // Create particle effect for balloon pop
-          for (let i = 0; i < 8; i++) {
+          // Create particle effect for bubble pop - fewer particles, water-like colors
+          for (let i = 0; i < 6; i++) {
             const particle = {
               x: x,
               y: y,
-              vx: (Math.random() - 0.5) * 10,
-              vy: (Math.random() - 0.5) * 10,
-              life: 30,
-              color: `hsl(${Math.random() * 360}, 70%, 60%)`,
+              vx: (Math.random() - 0.5) * 6, // Slower movement
+              vy: (Math.random() - 0.5) * 6 - 2, // Slight upward bias
+              life: 15, // Shorter lifespan
+              color: `hsla(${180 + Math.random() * 40}, 70%, 70%, 0.7)`, // Blue-ish transparent colors
+              size: 2 + Math.random() * 3 // Varied droplet sizes
             };
 
             // Add particles to a temporary array for rendering
@@ -869,41 +1256,49 @@
           }
         }
 
-        spawnBalloon() {
-          if (this.balloons.length >= this.maxBalloons) return;
+        spawnBubble() {
+          if (this.bubbles.length >= this.maxBubbles) return;
 
-          const balloon = {
+          const bubble = {
             x: Math.random() * this.canvasElement.width,
             y: this.canvasElement.height + 50, // Start below screen
-            radius: 30 + Math.random() * 20,
-            color: `hsl(${Math.random() * 360}, 70%, 60%)`,
-            speed: this.balloonSpeed + Math.random() * 2,
+            radius: 15 + Math.random() * 25, // Varied bubble sizes
+            color: `hsla(${180 + Math.random() * 40}, 70%, 70%, 0.7)`, // Blue-ish transparent colors
+            speed: this.bubbleSpeed + Math.random() * 1.5,
             bobOffset: Math.random() * Math.PI * 2,
-            bobSpeed: 0.02 + Math.random() * 0.02,
+            bobSpeed: 0.03 + Math.random() * 0.03, // More bobbing for bubbles
+            lastX: 0, // For gradient caching
+            lastY: 0, // For gradient caching
           };
 
-          this.balloons.push(balloon);
+          this.bubbles.push(bubble);
         }
 
-        updateBalloons() {
-          // Update existing balloons
-          for (let i = this.balloons.length - 1; i >= 0; i--) {
-            const balloon = this.balloons[i];
+        updateBubbles() {
+          // Update existing bubbles
+          for (let i = this.bubbles.length - 1; i >= 0; i--) {
+            const bubble = this.bubbles[i];
 
-            // Move balloon up with slight bobbing motion
-            balloon.y -= balloon.speed;
-            balloon.x += Math.sin(balloon.bobOffset) * 0.5;
-            balloon.bobOffset += balloon.bobSpeed;
+            // Move bubble up with more random wobbling motion
+            bubble.y -= bubble.speed;
+            bubble.x += Math.sin(bubble.bobOffset) * 1.2; // More horizontal movement
+            bubble.bobOffset += bubble.bobSpeed;
+            
+            // Add slight random movement for more realistic bubble effect
+            bubble.x += (Math.random() - 0.5) * 0.8;
+            
+            // Gradually slow down as bubbles rise (like real bubbles)
+            bubble.speed = Math.max(0.5, bubble.speed * 0.995);
 
-            // Remove balloons that have gone off screen
-            if (balloon.y + balloon.radius < 0) {
-              this.balloons.splice(i, 1);
+            // Remove bubbles that have gone off screen
+            if (bubble.y + bubble.radius < 0) {
+              this.bubbles.splice(i, 1);
             }
           }
 
-          // Spawn new balloons
-          if (Math.random() < this.balloonSpawnRate) {
-            this.spawnBalloon();
+          // Spawn new bubbles
+          if (Math.random() < this.bubbleSpawnRate) {
+            this.spawnBubble();
           }
 
           // Update particles
@@ -929,62 +1324,68 @@
           // Clear canvas
           ctx.clearRect(0, 0, width, height);
 
-          // Draw balloons - optimize by caching gradients and reducing operations
-          this.balloons.forEach((balloon) => {
-            // Only create gradient if it doesn't exist or balloon moved significantly
-            if (!balloon.cachedGradient || 
-                Math.abs(balloon.lastX - balloon.x) > 5 || 
-                Math.abs(balloon.lastY - balloon.y) > 5) {
+          // Draw bubbles - optimize by caching gradients and reducing operations
+          this.bubbles.forEach((bubble) => {
+            // Only create gradient if it doesn't exist or bubble moved significantly
+            if (!bubble.cachedGradient || 
+                Math.abs(bubble.lastX - bubble.x) > 5 || 
+                Math.abs(bubble.lastY - bubble.y) > 5) {
               
-              balloon.lastX = balloon.x;
-              balloon.lastY = balloon.y;
+              bubble.lastX = bubble.x;
+              bubble.lastY = bubble.y;
               
-              // Create and cache the gradient
-              balloon.cachedGradient = ctx.createRadialGradient(
-                balloon.x - balloon.radius * 0.3,
-                balloon.y - balloon.radius * 0.3,
+              // Create and cache the bubble gradient
+              bubble.cachedGradient = ctx.createRadialGradient(
+                bubble.x - bubble.radius * 0.3,
+                bubble.y - bubble.radius * 0.3,
                 0,
-                balloon.x,
-                balloon.y,
-                balloon.radius
+                bubble.x,
+                bubble.y,
+                bubble.radius
               );
-              balloon.cachedGradient.addColorStop(0, "rgba(255, 255, 255, 0.3)");
-              balloon.cachedGradient.addColorStop(1, balloon.color);
+              bubble.cachedGradient.addColorStop(0, "rgba(255, 255, 255, 0.5)");
+              bubble.cachedGradient.addColorStop(0.7, bubble.color);
+              bubble.cachedGradient.addColorStop(1, "rgba(255, 255, 255, 0.2)");
             }
 
-            ctx.fillStyle = balloon.cachedGradient;
+            // Draw bubble
+            ctx.fillStyle = bubble.cachedGradient;
             ctx.beginPath();
-            ctx.arc(balloon.x, balloon.y, balloon.radius, 0, 2 * Math.PI);
+            ctx.arc(bubble.x, bubble.y, bubble.radius, 0, 2 * Math.PI);
             ctx.fill();
 
-            // Balloon highlight
-            ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+            // Bubble highlight/reflection
+            ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
             ctx.beginPath();
             ctx.arc(
-              balloon.x - balloon.radius * 0.3,
-              balloon.y - balloon.radius * 0.3,
-              balloon.radius * 0.2,
+              bubble.x - bubble.radius * 0.3,
+              bubble.y - bubble.radius * 0.3,
+              bubble.radius * 0.15,
               0,
               2 * Math.PI
             );
             ctx.fill();
-
-            // Balloon string
-            ctx.strokeStyle = "#8B4513";
-            ctx.lineWidth = 2;
+            
+            // Second smaller highlight
+            ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
             ctx.beginPath();
-            ctx.moveTo(balloon.x, balloon.y + balloon.radius);
-            ctx.lineTo(balloon.x, balloon.y + balloon.radius + 40);
-            ctx.stroke();
+            ctx.arc(
+              bubble.x + bubble.radius * 0.1,
+              bubble.y - bubble.radius * 0.1,
+              bubble.radius * 0.05,
+              0,
+              2 * Math.PI
+            );
+            ctx.fill();
           });
 
-          // Draw particles
+          // Draw bubble pop particles
           if (this.particles) {
             this.particles.forEach((particle) => {
               ctx.fillStyle = particle.color;
-              ctx.globalAlpha = particle.life / 30;
+              ctx.globalAlpha = particle.life / 15; // Adjusted for shorter lifespan
               ctx.beginPath();
-              ctx.arc(particle.x, particle.y, 3, 0, 2 * Math.PI);
+              ctx.arc(particle.x, particle.y, particle.size || 3, 0, 2 * Math.PI);
               ctx.fill();
               ctx.globalAlpha = 1;
             });
@@ -1003,7 +1404,28 @@
 
           // Draw finger tip (aiming point)
           const fingerTip = this.handLandmarks[this.fingerTipIndex];
-          const fingerX = fingerTip.x * width;
+          
+          // Determine if we need to flip the X coordinate based on camera mode and hand type
+          const isFrontCamera = this.currentFacingMode.includes('user');
+          const isRightHand = this.handType === 'Right';
+          
+          // Logic for correct hand mirroring:
+          // 1. Front camera (selfie mode): 
+          //    - Right hand appears as left on screen, so we flip for right hand
+          //    - Left hand appears as right on screen, so we flip for left hand
+          // 2. Back camera (environment mode):
+          //    - We already flip for all hands, but need to adjust based on handedness
+          
+          let shouldFlipX;
+          if (isFrontCamera) {
+            // For front camera, flip if detected hand doesn't match visual hand
+            shouldFlipX = !isRightHand; // Flip for left hand in front camera
+          } else {
+            // For back camera, we already flip everything, but need to adjust based on hand type
+            shouldFlipX = true; // Always flip for back camera
+          }
+          
+          const fingerX = shouldFlipX ? width - (fingerTip.x * width) : fingerTip.x * width;
           const fingerY = fingerTip.y * height;
 
           // Draw aiming crosshair
@@ -1054,10 +1476,20 @@
             const start = this.handLandmarks[connection[0]];
             const end = this.handLandmarks[connection[1]];
 
-            // Flip X coordinates for natural interaction
-            const startX = (1 - start.x) * width;
+            // Use the same flipping logic as for the finger tip
+            const isFrontCamera = this.currentFacingMode.includes('user');
+            const isRightHand = this.handType === 'Right';
+            
+            let shouldFlipX;
+            if (isFrontCamera) {
+              shouldFlipX = !isRightHand; // Flip for left hand in front camera
+            } else {
+              shouldFlipX = true; // Always flip for back camera
+            }
+            
+            const startX = shouldFlipX ? width - (start.x * width) : start.x * width;
             const startY = start.y * height;
-            const endX = (1 - end.x) * width;
+            const endX = shouldFlipX ? width - (end.x * width) : end.x * width;
             const endY = end.y * height;
 
             ctx.beginPath();
@@ -1080,9 +1512,9 @@
             ).textContent = `${minutes}:${seconds.toString().padStart(2, "0")}`;
           }
 
-          // Update balloon count
+          // Update bubble count
           document.getElementById("balloon-count").textContent =
-            this.balloons.length;
+            this.bubbles.length;
         }
 
         gameLoop() {
@@ -1099,7 +1531,7 @@
           if (elapsed > frameInterval) {
             this.lastFrameTime = now - (elapsed % frameInterval);
             
-            this.updateBalloons();
+            this.updateBubbles();
             this.render();
             this.updateGameStats();
           }
@@ -1118,6 +1550,12 @@
           localStorage.removeItem('preferredCameraId');
           localStorage.removeItem('preferredCameraLabel');
           console.log('Cleared preferred camera settings for manual camera switch');
+          
+          // On mobile, show camera selection dialog
+          if (this.isMobileDevice()) {
+            await this.showCameraSelectionDialog();
+            return;
+          }
           
           // Create or get existing status element for better user feedback
           let statusElement = document.getElementById('camera-switch-status');
@@ -1257,12 +1695,14 @@
                 // For mobile devices, we need to be more explicit about what we want
                 const exactConstraints = {
                   video: {
-                    facingMode: { exact: this.currentFacingMode },
+                    facingMode: { ideal: this.currentFacingMode }, // Changed from exact to ideal for better compatibility
                     width: { ideal: 640, max: 1280 },
                     height: { ideal: 480, max: 720 }
                   },
                   audio: false // Explicitly disable audio to avoid permission issues
                 };
+                
+                console.log(`Using ideal facingMode constraint: ${this.currentFacingMode}`);
                 
                 // Add a retry mechanism for mobile devices
                 let retryCount = 0;
@@ -1311,16 +1751,14 @@
               } catch (exactError) {
                 console.warn(`Failed with exact constraints: ${exactError.name} - ${exactError.message}`);
                 
-                // Try with preferred constraints (not exact)
-                console.log('Trying with preferred facingMode constraints');
+                // Try with basic constraints as fallback
+                console.log('Trying with basic video constraints');
                 const preferredConstraints = {
-                  video: {
-                    facingMode: this.currentFacingMode, // Without 'exact'
-                    width: { ideal: 640, max: 1280 },
-                    height: { ideal: 480, max: 720 }
-                  },
+                  video: true, // Just request any video source as fallback
                   audio: false // Explicitly disable audio to avoid permission issues
                 };
+                
+                console.log('Using basic video constraints as fallback');
                 
                 // Implement retry logic for preferred constraints
                 let stream;
@@ -1526,7 +1964,7 @@
           this.score = 0;
           this.gameTime = 0;
           this.gameStartTime = Date.now();
-          this.balloons = [];
+          this.bubbles = [];
           this.particles = [];
 
           // Reset hand status indicator
@@ -1859,7 +2297,7 @@
 
       // Start the game when page loads
       document.addEventListener("DOMContentLoaded", () => {
-        new BalloonPopGame();
+        new BubblePopGame();
       });
     </script>
   </body>
