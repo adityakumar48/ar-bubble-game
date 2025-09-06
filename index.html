@@ -44,7 +44,7 @@
         left: 0;
         width: 100%;
         height: 100%;
-        pointer-events: none;
+        pointer-events: auto;
         transform: scaleX(-1);
       }
 
@@ -73,14 +73,14 @@
 
       #controls {
         position: absolute;
-        bottom: 80px; /* Increased from 30px to 80px to prevent sticking to screen edge */
+        bottom: 80px;
         left: 50%;
         transform: translateX(-50%);
         display: flex;
         gap: 15px;
         pointer-events: auto;
         align-items: center;
-        margin-bottom: 20px; /* Added additional margin for better spacing */
+        margin-bottom: 20px;
       }
 
       .status-indicators {
@@ -260,10 +260,10 @@
             <span id="hand-status">Initializing...</span>
           </div>
           <div style="margin-top: 8px">
-            🎯 <strong>Aim:</strong> Point finger at bubbles
+            🎯 <strong>Aim:</strong> Align the crosshair on a bubble
           </div>
           <div style="margin-top: 8px">
-            💥 <strong>Pop:</strong> Make "pinch" gesture
+            💥 <strong>Pop:</strong> Place the crosshair over the bubble to burst it
           </div>
         </div>
 
@@ -316,10 +316,10 @@
           this.canvasCtx = null;
           this.isTracking = false;
 
-          // Set default camera mode based on device type
-          this.currentFacingMode = this.isMobileDevice()
-            ? "environment"
-            : "user";
+          // Improved camera detection
+          this.currentFacingMode = this.detectInitialCamera();
+          this.availableCameras = [];
+          
           console.log(
             `Device detected as: ${
               this.isMobileDevice() ? "mobile" : "desktop"
@@ -333,54 +333,149 @@
           this.gameStartTime = 0;
           this.bubbles = [];
           this.handLandmarks = null;
-          this.lastPinchState = false;
+          // Pinch detection removed; using tap-to-burst only
 
           // Game settings
           this.maxBubbles = 8;
-          this.bubbleSpawnRate = 0.02; // Probability per frame
+          this.bubbleSpawnRate = 0.02;
           this.bubbleSpeed = 1;
 
-          // Hand gesture detection
-          this.fingerTipIndex = 8; // Index finger tip
-          this.thumbTipIndex = 4; // Thumb tip
-          this.pinchThreshold = 0.05; // Distance threshold for pinch
+          // Hand skeleton rendering
+          this.fingerTipIndex = 8;
+          this.thumbTipIndex = 4;
 
           this.init();
         }
+
+        detectInitialCamera() {
+          // Better detection logic
+          const userAgent = navigator.userAgent.toLowerCase();
+          const isMobile = /android|iphone|ipad|ipod|blackberry|windows phone|mobile/.test(userAgent);
+          
+          // On mobile, prefer back camera for AR experience
+          // On desktop, prefer front camera for convenience
+          return isMobile ? "environment" : "user";
+        }
+
+        async enumerateCameras() {
+          try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            this.availableCameras = devices.filter(device => device.kind === 'videoinput');
+            console.log(`Found ${this.availableCameras.length} cameras:`, 
+              this.availableCameras.map(d => d.label || 'Unknown Camera'));
+            return this.availableCameras;
+          } catch (error) {
+            console.warn('Could not enumerate cameras:', error);
+            return [];
+          }
+        }
+
         init() {
           this.videoElement = document.getElementById("camera-feed");
           this.canvasElement = document.getElementById("game-canvas");
           this.canvasCtx = this.canvasElement.getContext("2d");
 
-          // Initialize hand status indicator
           const handStatus = document.getElementById("hand-status-indicator");
           if (handStatus) {
             handStatus.textContent = "Initializing";
-            handStatus.style.color = "#FFA500"; // Orange for initializing
+            handStatus.style.color = "#FFA500";
           }
 
           this.setupEventListeners();
           this.resizeCanvas();
+          
+          // Add cleanup on page unload
+          window.addEventListener('beforeunload', () => {
+            this.cleanup();
+          });
+          
+          // Handle visibility change: pause/resume instead of full cleanup (prevents black screen on mobile)
+          document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+              this.pauseCamera();
+            } else {
+              this.resumeCamera();
+            }
+          });
+        }
+        
+        cleanup() {
+          console.log('Cleaning up resources...');
+          this.stopProcessingLoop();
+          
+          // Stop stream monitoring
+          if (this.streamMonitor) {
+            clearInterval(this.streamMonitor);
+            this.streamMonitor = null;
+          }
+          
+          // Stop tracking
+          this.isTracking = false;
+          this.isRecovering = false;
+          
+          // Stop MediaPipe (hands)
+          if (this.hands) {
+            try {
+              this.hands.close();
+            } catch (e) {
+              console.warn('Error closing MediaPipe:', e);
+            }
+            this.hands = null;
+          }
+          
+          // Stop video stream
+          if (this.videoElement && this.videoElement.srcObject) {
+            const tracks = this.videoElement.srcObject.getTracks();
+            tracks.forEach(track => {
+              try {
+                track.stop();
+              } catch (e) {
+                console.warn('Error stopping track:', e);
+              }
+            });
+            this.videoElement.srcObject = null;
+          }
+        }
+        
+        pauseCamera() {
+          // Pause only the video element; keep tracks alive to prevent back camera re-acquire issues
+          if (this.videoElement) {
+            try { this.videoElement.pause(); } catch {}
+          }
+          this.stopProcessingLoop();
+        }
+        
+        async resumeCamera() {
+          // Resume playback if stream exists; otherwise try to restart safely
+          if (this.videoElement && this.videoElement.srcObject) {
+            try {
+              await this.videoElement.play();
+            } catch (e) {
+              console.warn('Video play failed on resume:', e);
+            }
+            this.startProcessingLoop();
+            return;
+          }
+          try {
+            await this.startCamera();
+            this.setupCameraProcessing();
+          } catch (e) {
+            console.error('Failed to resume camera:', e);
+          }
         }
 
         setupEventListeners() {
-          document
-            .getElementById("startGameBtn")
-            .addEventListener("click", () => {
-              this.startGame();
-            });
+          document.getElementById("startGameBtn").addEventListener("click", () => {
+            this.startGame();
+          });
 
-          document
-            .getElementById("switchCamera")
-            .addEventListener("click", () => {
-              this.switchCamera();
-            });
+          document.getElementById("switchCamera").addEventListener("click", () => {
+            this.switchCamera();
+          });
 
-          document
-            .getElementById("cameraInfo")
-            .addEventListener("click", () => {
-              this.showCameraInfo();
-            });
+          document.getElementById("cameraInfo").addEventListener("click", () => {
+            this.showCameraInfo();
+          });
 
           document.getElementById("resetGame").addEventListener("click", () => {
             this.resetGame();
@@ -389,6 +484,41 @@
           window.addEventListener("resize", () => {
             this.resizeCanvas();
           });
+
+          // Tap-to-pop on canvas
+          const toCanvasCoords = (clientX, clientY) => {
+            const rect = this.canvasElement.getBoundingClientRect();
+            let x = ((clientX - rect.left) / rect.width) * this.canvasElement.width;
+            let y = ((clientY - rect.top) / rect.height) * this.canvasElement.height;
+            // Mirror X because canvas is visually flipped
+            x = this.canvasElement.width - x;
+            return { x, y };
+          };
+
+          const handleTap = (x, y) => {
+            for (let i = this.bubbles.length - 1; i >= 0; i--) {
+              const b = this.bubbles[i];
+              const dx = x - b.x;
+              const dy = y - b.y;
+              if (dx * dx + dy * dy <= b.radius * b.radius) {
+                this.popBubble(i, x, y);
+                break;
+              }
+            }
+          };
+
+          this.canvasElement.addEventListener("pointerdown", (e) => {
+            if (!this.gameStarted) return;
+            // Ignore mouse clicks; allow touch/pen only
+            if (e.pointerType === "mouse") return;
+            const { x, y } = toCanvasCoords(e.clientX, e.clientY);
+            handleTap(x, y);
+          });
+
+          // Prevent scrolling on touch devices while interacting on canvas
+          this.canvasElement.addEventListener("touchstart", (e) => {
+            e.preventDefault();
+          }, { passive: false });
         }
 
         resizeCanvas() {
@@ -396,8 +526,83 @@
           this.canvasElement.height = window.innerHeight;
         }
 
+        isMobileDevice() {
+          const userAgent = navigator.userAgent.toLowerCase();
+          const mobileKeywords = [
+            "android", "iphone", "ipad", "ipod", "blackberry", "windows phone", "mobile"
+          ];
+
+          const isMobileByUA = mobileKeywords.some(keyword =>
+            userAgent.includes(keyword)
+          );
+
+          const isMobileBySize = window.innerWidth <= 800 || window.innerHeight <= 600;
+          const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+
+          return isMobileByUA || (isMobileBySize && isTouchDevice);
+        }
+
+        async startGame() {
+          const startScreen = document.getElementById("start-screen");
+          const container = document.getElementById("container");
+          const startBtn = document.getElementById("startGameBtn");
+          const handStatusIndicator = document.getElementById("hand-status-indicator");
+
+          startBtn.innerHTML = '<div class="loading"></div>Starting...';
+          startBtn.disabled = true;
+
+          if (handStatusIndicator) {
+            handStatusIndicator.textContent = "Starting...";
+            handStatusIndicator.style.color = "#FFA500";
+          }
+
+          try {
+            // Enumerate cameras first
+            await this.enumerateCameras();
+
+            // Initialize MediaPipe
+            await this.initializeMediaPipe();
+
+            // Start camera
+            await this.startCamera();
+
+            // Setup camera processing
+            this.setupCameraProcessing();
+
+            startScreen.style.display = "none";
+            container.style.display = "block";
+
+            const switchBtn = document.getElementById("switchCamera");
+            switchBtn.textContent = this.currentFacingMode.includes("user")
+              ? "📷 Switch to Back Camera"
+              : "📷 Switch to Front Camera";
+
+            this.isTracking = true;
+            this.gameStarted = true;
+            this.gameStartTime = Date.now();
+            this.gameLoop();
+
+            document.getElementById("hand-status").textContent = "Active";
+
+            if (handStatusIndicator) {
+              handStatusIndicator.textContent = "Active";
+              handStatusIndicator.style.color = "#4ECDC4";
+            }
+          } catch (error) {
+            console.error("Error starting game:", error);
+            startBtn.innerHTML = "❌ Error - Try Again";
+            startBtn.disabled = false;
+
+            if (handStatusIndicator) {
+              handStatusIndicator.textContent = "Error";
+              handStatusIndicator.style.color = "#FF5252";
+            }
+
+            this.showErrorMessage(error.message);
+          }
+        }
+
         showErrorMessage(message) {
-          // Create a modal for error message
           const modal = document.createElement("div");
           modal.style.position = "fixed";
           modal.style.top = "0";
@@ -409,9 +614,8 @@
           modal.style.flexDirection = "column";
           modal.style.justifyContent = "center";
           modal.style.alignItems = "center";
-          modal.style.zIndex = "1000";
+          modal.style.zIndex = "3000";
 
-          // Create message container
           const messageContainer = document.createElement("div");
           messageContainer.style.backgroundColor = "white";
           messageContainer.style.padding = "20px";
@@ -419,20 +623,17 @@
           messageContainer.style.maxWidth = "80%";
           messageContainer.style.textAlign = "center";
 
-          // Add error icon
           const errorIcon = document.createElement("div");
           errorIcon.innerHTML = "❌";
           errorIcon.style.fontSize = "48px";
           errorIcon.style.marginBottom = "15px";
           messageContainer.appendChild(errorIcon);
 
-          // Add message text
           const messageText = document.createElement("div");
           messageText.textContent = message;
           messageText.style.marginBottom = "20px";
           messageContainer.appendChild(messageText);
 
-          // Add OK button
           const okButton = document.createElement("button");
           okButton.textContent = "OK";
           okButton.style.padding = "10px 20px";
@@ -450,440 +651,6 @@
           document.body.appendChild(modal);
         }
 
-        isMobileDevice() {
-          // Check if the device is mobile based on user agent or screen size
-          const userAgent = navigator.userAgent.toLowerCase();
-          const mobileKeywords = [
-            "android",
-            "iphone",
-            "ipad",
-            "ipod",
-            "blackberry",
-            "windows phone",
-            "mobile",
-          ];
-
-          // Check user agent for mobile keywords
-          const isMobileByUA = mobileKeywords.some((keyword) =>
-            userAgent.includes(keyword)
-          );
-
-          // Check screen size (typically mobile devices have smaller screens)
-          const isMobileBySize =
-            window.innerWidth <= 800 || window.innerHeight <= 600;
-
-          // Check if touch is supported (most mobile devices support touch)
-          const isTouchDevice =
-            "ontouchstart" in window || navigator.maxTouchPoints > 0;
-
-          // Return true if any of the checks indicate a mobile device
-          return isMobileByUA || (isMobileBySize && isTouchDevice);
-        }
-
-        async showCameraSelectionDialog() {
-          // Create a modal dialog for camera selection
-          const modal = document.createElement("div");
-          modal.style.position = "fixed";
-          modal.style.top = "0";
-          modal.style.left = "0";
-          modal.style.width = "100%";
-          modal.style.height = "100%";
-          modal.style.backgroundColor = "rgba(0,0,0,0.8)";
-          modal.style.zIndex = "1000";
-          modal.style.display = "flex";
-          modal.style.flexDirection = "column";
-          modal.style.justifyContent = "center";
-          modal.style.alignItems = "center";
-          modal.style.color = "white";
-          modal.style.fontFamily = "Arial, sans-serif";
-          modal.style.padding = "20px";
-
-          // Add title
-          const title = document.createElement("h2");
-          title.textContent = "Select Camera";
-          title.style.marginBottom = "20px";
-          modal.appendChild(title);
-
-          // Add loading indicator
-          const loadingText = document.createElement("div");
-          loadingText.textContent = "Loading available cameras...";
-          loadingText.style.marginBottom = "20px";
-          modal.appendChild(loadingText);
-
-          // Add container for camera buttons
-          const buttonContainer = document.createElement("div");
-          buttonContainer.style.display = "flex";
-          buttonContainer.style.flexDirection = "column";
-          buttonContainer.style.width = "80%";
-          buttonContainer.style.maxWidth = "300px";
-          modal.appendChild(buttonContainer);
-
-          // Add close button
-          const closeButton = document.createElement("button");
-          closeButton.textContent = "Cancel";
-          closeButton.style.padding = "10px";
-          closeButton.style.marginTop = "20px";
-          closeButton.style.backgroundColor = "#555";
-          closeButton.style.border = "none";
-          closeButton.style.borderRadius = "5px";
-          closeButton.style.color = "white";
-          closeButton.style.cursor = "pointer";
-          closeButton.onclick = () => {
-            document.body.removeChild(modal);
-            // Re-enable the switch camera button
-            const switchBtn = document.getElementById("switchCamera");
-            if (switchBtn) {
-              switchBtn.disabled = false;
-              switchBtn.textContent = this.currentFacingMode.includes("user")
-                ? "📷 Switch to Back Camera"
-                : "📷 Switch to Front Camera";
-            }
-          };
-          modal.appendChild(closeButton);
-
-          // Add the modal to the page
-          document.body.appendChild(modal);
-
-          try {
-            // Get list of video devices
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(
-              (device) => device.kind === "videoinput"
-            );
-
-            // Remove loading text
-            modal.removeChild(loadingText);
-
-            if (videoDevices.length === 0) {
-              const noDevicesText = document.createElement("div");
-              noDevicesText.textContent = "No cameras found";
-              noDevicesText.style.marginBottom = "20px";
-              buttonContainer.appendChild(noDevicesText);
-              return;
-            }
-
-            // Add instruction text
-            const instructionText = document.createElement("div");
-            instructionText.textContent = "Select a camera:";
-            instructionText.style.marginBottom = "15px";
-            instructionText.style.textAlign = "center";
-            buttonContainer.appendChild(instructionText);
-
-            // Create a button for each camera
-            for (let i = 0; i < videoDevices.length; i++) {
-              const device = videoDevices[i];
-              const button = document.createElement("button");
-
-              // Try to identify camera type from label
-              const label = device.label || `Camera ${i + 1}`;
-              let cameraType = "";
-
-              if (
-                label.toLowerCase().includes("back") ||
-                label.toLowerCase().includes("rear") ||
-                label.toLowerCase().includes("environment")
-              ) {
-                cameraType = " (Back Camera)";
-              } else if (
-                label.toLowerCase().includes("front") ||
-                label.toLowerCase().includes("user") ||
-                label.toLowerCase().includes("selfie")
-              ) {
-                cameraType = " (Front Camera)";
-              }
-
-              button.textContent = `${label}${cameraType}`;
-              button.style.padding = "15px";
-              button.style.marginBottom = "10px";
-              button.style.backgroundColor = "#007bff";
-              button.style.border = "none";
-              button.style.borderRadius = "5px";
-              button.style.color = "white";
-              button.style.cursor = "pointer";
-              button.style.textAlign = "left";
-              button.style.wordBreak = "break-word";
-
-              // Add click handler to select this camera
-              button.onclick = async () => {
-                try {
-                  // Store this camera as preferred
-                  localStorage.setItem("preferredCameraId", device.deviceId);
-                  localStorage.setItem(
-                    "preferredCameraLabel",
-                    device.label || `Camera ${i + 1}`
-                  );
-
-                  // Determine facing mode from label for better tracking
-                  if (
-                    label.toLowerCase().includes("back") ||
-                    label.toLowerCase().includes("rear") ||
-                    label.toLowerCase().includes("environment")
-                  ) {
-                    this.currentFacingMode = "environment";
-                  } else if (
-                    label.toLowerCase().includes("front") ||
-                    label.toLowerCase().includes("user") ||
-                    label.toLowerCase().includes("selfie")
-                  ) {
-                    this.currentFacingMode = "user";
-                  } else {
-                    // If we can't determine from label, use opposite of current
-                    this.currentFacingMode = this.currentFacingMode.includes(
-                      "user"
-                    )
-                      ? "environment"
-                      : "user";
-                  }
-
-                  console.log(
-                    `Selected camera: ${label}, setting facing mode to: ${this.currentFacingMode}`
-                  );
-
-                  // Remove the modal
-                  document.body.removeChild(modal);
-
-                  // Stop current camera
-                  if (this.videoElement.srcObject) {
-                    const tracks = this.videoElement.srcObject.getTracks();
-                    tracks.forEach((track) => {
-                      track.stop();
-                      console.log(`Stopped track: ${track.kind}`);
-                    });
-                    this.videoElement.srcObject = null;
-                  }
-
-                  // Stop MediaPipe camera
-                  if (this.camera) {
-                    try {
-                      await this.camera.stop();
-                      this.camera = null;
-                      console.log("Stopped MediaPipe camera");
-                    } catch (e) {
-                      console.warn("Error stopping MediaPipe camera:", e);
-                    }
-                  }
-
-                  // Show status message
-                  const statusElement = document.createElement("div");
-                  statusElement.textContent = `Switching to ${label}...`;
-                  statusElement.style.position = "fixed";
-                  statusElement.style.top = "50%";
-                  statusElement.style.left = "50%";
-                  statusElement.style.transform = "translate(-50%, -50%)";
-                  statusElement.style.backgroundColor = "rgba(0,0,0,0.7)";
-                  statusElement.style.color = "white";
-                  statusElement.style.padding = "10px 20px";
-                  statusElement.style.borderRadius = "20px";
-                  statusElement.style.zIndex = "1000";
-                  document.body.appendChild(statusElement);
-
-                  // Wait a moment to ensure resources are released
-                  await new Promise((resolve) => setTimeout(resolve, 1000));
-
-                  // Start camera with the selected device
-                  try {
-                    const constraints = {
-                      video: {
-                        deviceId: { exact: device.deviceId },
-                        width: { ideal: 640, max: 1280 },
-                        height: { ideal: 480, max: 720 },
-                      },
-                      audio: false,
-                    };
-
-                    const stream = await navigator.mediaDevices.getUserMedia(
-                      constraints
-                    );
-                    this.videoElement.srcObject = stream;
-
-                    await new Promise((resolve) => {
-                      this.videoElement.onloadedmetadata = () => {
-                        this.videoElement
-                          .play()
-                          .then(resolve)
-                          .catch((e) => {
-                            console.error("Error playing video:", e);
-                            resolve(); // Continue anyway
-                          });
-                      };
-                      setTimeout(resolve, 3000); // Timeout fallback
-                    });
-
-                    // Update MediaPipe selfieMode based on current camera mode
-                    if (this.hands) {
-                      const isFrontCamera =
-                        this.currentFacingMode.includes("user");
-                      await this.hands.setOptions({
-                        maxNumHands: 1,
-                        modelComplexity: 1,
-                        minDetectionConfidence: 0.5,
-                        minTrackingConfidence: 0.5,
-                        selfieMode: isFrontCamera,
-                      });
-                      console.log(
-                        `MediaPipe selfieMode updated to: ${isFrontCamera} for ${this.currentFacingMode} camera`
-                      );
-                    }
-
-                    // Create camera object for MediaPipe
-                    this.camera = new Camera(this.videoElement, {
-                      onFrame: async () => {
-                        if (this.hands && this.isTracking) {
-                          await this.hands.send({ image: this.videoElement });
-                        }
-                      },
-                      width: 640,
-                      height: 480,
-                    });
-
-                    await this.camera.start();
-                    console.log("Started camera with selected device");
-
-                    // Update button text
-                    const switchBtn = document.getElementById("switchCamera");
-                    if (switchBtn) {
-                      switchBtn.disabled = false;
-                      switchBtn.textContent = this.currentFacingMode.includes(
-                        "user"
-                      )
-                        ? "📷 Switch to Back Camera"
-                        : "📷 Switch to Front Camera";
-                    }
-
-                    // Remove status element
-                    document.body.removeChild(statusElement);
-                  } catch (error) {
-                    console.error(
-                      "Error starting camera with selected device:",
-                      error
-                    );
-
-                    // Update status message
-                    statusElement.textContent = `Error: ${error.message}`;
-                    setTimeout(() => {
-                      if (document.body.contains(statusElement)) {
-                        document.body.removeChild(statusElement);
-                      }
-                    }, 3000);
-
-                    // Re-enable the switch camera button
-                    const switchBtn = document.getElementById("switchCamera");
-                    if (switchBtn) {
-                      switchBtn.disabled = false;
-                      switchBtn.textContent = this.currentFacingMode.includes(
-                        "user"
-                      )
-                        ? "📷 Switch to Back Camera"
-                        : "📷 Switch to Front Camera";
-                    }
-                  }
-                } catch (error) {
-                  console.error("Error in camera selection:", error);
-
-                  // Re-enable the switch camera button
-                  const switchBtn = document.getElementById("switchCamera");
-                  if (switchBtn) {
-                    switchBtn.disabled = false;
-                    switchBtn.textContent = this.currentFacingMode.includes(
-                      "user"
-                    )
-                      ? "📷 Switch to Back Camera"
-                      : "📷 Switch to Front Camera";
-                  }
-                }
-              };
-
-              buttonContainer.appendChild(button);
-            }
-          } catch (error) {
-            console.error("Error enumerating devices:", error);
-
-            const errorText = document.createElement("div");
-            errorText.textContent = `Error: ${error.message}`;
-            errorText.style.marginBottom = "20px";
-            errorText.style.color = "red";
-            buttonContainer.appendChild(errorText);
-
-            // Re-enable the switch camera button
-            const switchBtn = document.getElementById("switchCamera");
-            if (switchBtn) {
-              switchBtn.disabled = false;
-              switchBtn.textContent = this.currentFacingMode.includes("user")
-                ? "📷 Switch to Back Camera"
-                : "📷 Switch to Front Camera";
-            }
-          }
-        }
-
-        async startGame() {
-          const startScreen = document.getElementById("start-screen");
-          const container = document.getElementById("container");
-          const startBtn = document.getElementById("startGameBtn");
-          const handStatusIndicator = document.getElementById(
-            "hand-status-indicator"
-          );
-
-          startBtn.innerHTML = '<div class="loading"></div>Starting...';
-          startBtn.disabled = true;
-
-          // Update hand status indicator
-          if (handStatusIndicator) {
-            handStatusIndicator.textContent = "Starting...";
-            handStatusIndicator.style.color = "#FFA500"; // Orange for initializing
-          }
-
-          try {
-            // Initialize MediaPipe
-            await this.initializeMediaPipe();
-
-            // Start camera
-            await this.startCamera();
-
-            // Setup camera processing
-            this.setupCameraProcessing();
-
-            // Hide start screen and show game
-            startScreen.style.display = "none";
-            container.style.display = "block";
-
-            // Update camera switch button text based on current mode
-            const switchBtn = document.getElementById("switchCamera");
-            switchBtn.textContent = this.currentFacingMode.includes("user")
-              ? "📷 Switch to Back Camera"
-              : "📷 Switch to Front Camera";
-
-            // Start game logic
-            this.isTracking = true;
-            this.gameStarted = true;
-            this.gameStartTime = Date.now();
-            this.gameLoop();
-
-            document.getElementById("hand-status").textContent = "Active";
-
-            // Update hand status indicator to active
-            if (handStatusIndicator) {
-              handStatusIndicator.textContent = "Active";
-              handStatusIndicator.style.color = "#4ECDC4"; // Teal for active
-            }
-          } catch (error) {
-            console.error("Error starting game:", error);
-            startBtn.innerHTML = "❌ Error - Try Again";
-            startBtn.disabled = false;
-
-            // Update hand status indicator on error
-            if (handStatusIndicator) {
-              handStatusIndicator.textContent = "Error";
-              handStatusIndicator.style.color = "#FF5252"; // Red for error
-            }
-
-            if (error.message.includes("Camera")) {
-              alert(
-                "Camera permission required! Please allow camera access and try again."
-              );
-            }
-          }
-        }
-
         async initializeMediaPipe() {
           if (typeof Hands === "undefined") {
             throw new Error("MediaPipe Hands not loaded");
@@ -895,16 +662,13 @@
             },
           });
 
-          // For back camera (environment), we need to set selfieMode to false
-          // For front camera (user), we need to set selfieMode to true
           const isFrontCamera = this.currentFacingMode.includes("user");
 
           await this.hands.setOptions({
             maxNumHands: 1,
-            modelComplexity: 0, // Lower model complexity for better performance (0 is fastest)
-            minDetectionConfidence: 0.6, // Slightly lower detection threshold for better performance
+            modelComplexity: 0,
+            minDetectionConfidence: 0.6,
             minTrackingConfidence: 0.5,
-            // Set selfieMode based on camera mode - true for front camera, false for back camera
             selfieMode: isFrontCamera,
           });
 
@@ -919,496 +683,861 @@
 
         async startCamera() {
           try {
-            // Request camera permission at the beginning
+            // Request permission first
             try {
               await navigator.mediaDevices.getUserMedia({ video: true });
               console.log("Camera permission granted");
             } catch (permissionError) {
-              console.error("Camera permission denied:", permissionError);
-              this.showErrorMessage(
-                "Camera permission required! Please allow camera access and try again."
-              );
-              throw new Error("Camera permission denied");
+              throw new Error("Camera permission required! Please allow camera access and try again.");
             }
 
-            // Stop existing stream if any
+            // Stop existing stream
             if (this.videoElement.srcObject) {
               const tracks = this.videoElement.srcObject.getTracks();
-              tracks.forEach((track) => {
-                track.stop();
-                console.log(`Stopped track: ${track.kind}`);
-              });
+              tracks.forEach(track => track.stop());
               this.videoElement.srcObject = null;
             }
 
-            // Add a small delay to ensure resources are released
-            await new Promise((resolve) => setTimeout(resolve, 500));
+            await new Promise(resolve => setTimeout(resolve, 500));
 
-            // Check if we have a preferred camera stored
-            const preferredCameraId = localStorage.getItem("preferredCameraId");
-            const preferredCameraLabel = localStorage.getItem(
-              "preferredCameraLabel"
-            );
-
-            if (preferredCameraId) {
-              console.log(
-                `Found preferred camera: ${
-                  preferredCameraLabel || preferredCameraId
-                }`
-              );
-            } else {
-              console.log(
-                `No preferred camera found, using facing mode: ${this.currentFacingMode}`
-              );
-            }
-
-            // Try with exact constraints first for more reliable camera switching
-            let exactConstraints;
-
-            if (preferredCameraId) {
-              // If we have a preferred camera ID, use that instead of facing mode
-              exactConstraints = {
+            // Detect mobile device
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            
+            // Try different constraint strategies
+            const strategies = [
+              // Strategy 1: Preferred device ID if available
+              () => {
+                const preferredId = localStorage.getItem("preferredCameraId");
+                if (preferredId) {
+                  return {
+                    video: {
+                      deviceId: { exact: preferredId },
+                      width: isMobile ? { ideal: 480, max: 640 } : { ideal: 640, max: 1280 },
+                      height: isMobile ? { ideal: 360, max: 480 } : { ideal: 480, max: 720 },
+                    },
+                    audio: false,
+                  };
+                }
+                return null;
+              },
+              
+              // Strategy 2: Exact facing mode
+              () => ({
                 video: {
-                  deviceId: { exact: preferredCameraId },
+                  facingMode: { exact: this.currentFacingMode },
+                  width: isMobile ? { ideal: 480, max: 640 } : { ideal: 640, max: 1280 },
+                  height: isMobile ? { ideal: 360, max: 480 } : { ideal: 480, max: 720 },
+                },
+                audio: false,
+              }),
+              
+              // Strategy 3: Ideal facing mode
+              () => ({
+                video: {
+                  facingMode: { ideal: this.currentFacingMode },
+                  width: isMobile ? { ideal: 480, max: 640 } : { ideal: 640, max: 1280 },
+                  height: isMobile ? { ideal: 360, max: 480 } : { ideal: 480, max: 720 },
+                },
+                audio: false,
+              }),
+              
+              // Strategy 4: Mobile-optimized basic video
+              () => ({
+                video: isMobile ? {
+                  width: { ideal: 320, max: 480 },
+                  height: { ideal: 240, max: 360 },
+                  frameRate: { ideal: 15, max: 30 }
+                } : {
                   width: { ideal: 640, max: 1280 },
                   height: { ideal: 480, max: 720 },
                 },
-                audio: false, // Explicitly disable audio to avoid permission issues
-              };
-              console.log("Using preferred camera ID for constraints");
-            } else {
-              // Otherwise use facing mode as before
-              exactConstraints = {
-                video: {
-                  facingMode: { ideal: this.currentFacingMode }, // Changed from exact to ideal for better compatibility
-                  width: { ideal: 640, max: 1280 },
-                  height: { ideal: 480, max: 720 },
-                },
-                audio: false, // Explicitly disable audio to avoid permission issues
-              };
-              console.log(
-                `Using ideal facingMode constraint: ${this.currentFacingMode}`
-              );
-            }
+                audio: false,
+              }),
+              
+              // Strategy 5: Minimal constraints for mobile fallback
+              () => isMobile ? {
+                video: true,
+                audio: false,
+              } : null,
+            ];
 
-            let stream;
-            try {
-              // First try with exact constraints
-              console.log("Trying with exact facingMode constraints");
-              stream = await navigator.mediaDevices.getUserMedia(
-                exactConstraints
-              );
-              console.log("Successfully got stream with exact constraints");
-            } catch (exactError) {
-              console.warn(
-                `Failed with exact constraints: ${exactError.name} - ${exactError.message}`
-              );
+            let stream = null;
+            let lastError = null;
+
+            for (let i = 0; i < strategies.length; i++) {
+              const constraints = strategies[i]();
+              if (!constraints) continue;
 
               try {
-                // Then try with preferred constraints
-                console.log("Trying with preferred constraints (non-exact)");
-
-                let preferredConstraints;
-                const preferredCameraId =
-                  localStorage.getItem("preferredCameraId");
-
-                if (preferredCameraId) {
-                  // If we have a preferred camera ID, use that instead of facing mode
-                  preferredConstraints = {
-                    video: {
-                      deviceId: preferredCameraId, // Without 'exact'
-                      width: { ideal: 640, max: 1280 },
-                      height: { ideal: 480, max: 720 },
-                    },
-                    audio: false, // Explicitly disable audio to avoid permission issues
-                  };
-                  console.log(
-                    "Using preferred camera ID for non-exact constraints"
-                  );
-                } else {
-                  // Otherwise use facing mode as before
-                  preferredConstraints = {
-                    video: {
-                      facingMode: this.currentFacingMode, // Without 'exact'
-                      width: { ideal: 640, max: 1280 },
-                      height: { ideal: 480, max: 720 },
-                    },
-                    audio: false, // Explicitly disable audio to avoid permission issues
-                  };
-                  console.log("Using facing mode for non-exact constraints");
-                }
-
-                stream = await navigator.mediaDevices.getUserMedia(
-                  preferredConstraints
-                );
-                console.log(
-                  "Successfully got stream with preferred constraints"
-                );
-              } catch (preferredError) {
-                console.warn(
-                  `Failed with preferred constraints: ${preferredError.name} - ${preferredError.message}`
-                );
-
-                // Last resort: try with basic constraints
-                console.log("Trying with basic video constraints");
-                stream = await navigator.mediaDevices.getUserMedia({
-                  video: true,
-                  audio: false, // Explicitly disable audio to avoid permission issues
-                });
-                console.log("Successfully got stream with basic constraints");
+                console.log(`Trying camera strategy ${i + 1}:`, constraints);
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                console.log(`Strategy ${i + 1} successful`);
+                break;
+              } catch (error) {
+                console.warn(`Strategy ${i + 1} failed:`, error.message);
+                lastError = error;
+                continue;
               }
             }
 
-            // Set the stream to the video element
+            if (!stream) {
+              throw lastError || new Error("Could not access camera with any strategy");
+            }
+
             this.videoElement.srcObject = stream;
 
-            // Log the actual tracks we got
+            // Detect actual camera type
             const tracks = stream.getVideoTracks();
             if (tracks.length > 0) {
               const settings = tracks[0].getSettings();
-              console.log("Actual camera settings:", settings);
+              console.log("Camera settings:", settings);
 
-              // Store the originally requested facing mode
-              const requestedFacingMode = this.currentFacingMode;
-              let detectedFacingMode = null;
-
-              // Some browsers/devices report the actual facingMode
+              // Update facing mode based on what we actually got
               if (settings.facingMode) {
-                console.log(
-                  `Actual facing mode from settings: ${settings.facingMode}`
-                );
-                detectedFacingMode = settings.facingMode;
+                this.currentFacingMode = settings.facingMode;
               } else {
-                // If facingMode isn't reported, try to determine from track label
-                const trackLabel = (tracks[0].label || "").toLowerCase();
-                console.log(`Camera track label: ${trackLabel}`);
-
-                // Try to detect camera type from label
-                if (
-                  trackLabel.includes("front") ||
-                  trackLabel.includes("user") ||
-                  trackLabel.includes("selfie")
-                ) {
-                  console.log("Detected front camera from track label");
-                  detectedFacingMode = "user";
-                } else if (
-                  trackLabel.includes("back") ||
-                  trackLabel.includes("environment") ||
-                  trackLabel.includes("rear")
-                ) {
-                  console.log("Detected back camera from track label");
-                  detectedFacingMode = "environment";
+                // Try to detect from label
+                const label = tracks[0].label.toLowerCase();
+                if (label.includes("front") || label.includes("user") || label.includes("selfie")) {
+                  this.currentFacingMode = "user";
+                } else if (label.includes("back") || label.includes("environment") || label.includes("rear")) {
+                  this.currentFacingMode = "environment";
                 }
               }
 
-              // If we detected a facing mode, update our tracking
-              if (detectedFacingMode) {
-                this.currentFacingMode = detectedFacingMode;
-                console.log(
-                  `Updated current facing mode to: ${this.currentFacingMode}`
-                );
-              } else {
-                console.log(
-                  `Could not detect camera type, keeping requested mode: ${this.currentFacingMode}`
-                );
-              }
+              console.log(`Using camera: ${this.currentFacingMode}`);
+            }
 
-              // Log if we got a different camera than requested
-              if (requestedFacingMode !== this.currentFacingMode) {
-                console.log(
-                  `Note: Requested ${requestedFacingMode} camera, but got ${this.currentFacingMode} camera`
-                );
-                // Alert the user if we couldn't get the requested camera
-                if (
-                  requestedFacingMode === "environment" &&
-                  this.currentFacingMode === "user"
-                ) {
-                  // Create a temporary status element if needed
-                  let statusElement = document.getElementById(
-                    "camera-switch-status"
-                  );
-                  if (!statusElement) {
-                    statusElement = document.createElement("div");
-                    statusElement.id = "camera-switch-status";
-                    statusElement.style.position = "fixed";
-                    statusElement.style.top = "50%";
-                    statusElement.style.left = "50%";
-                    statusElement.style.transform = "translate(-50%, -50%)";
-                    statusElement.style.backgroundColor = "rgba(0,0,0,0.7)";
-                    statusElement.style.color = "white";
-                    statusElement.style.padding = "10px 20px";
-                    statusElement.style.borderRadius = "20px";
-                    statusElement.style.zIndex = "1000";
-                    document.body.appendChild(statusElement);
+            return new Promise((resolve, reject) => {
+              let resolved = false;
+              
+              const handleSuccess = () => {
+                if (resolved) return;
+                resolved = true;
+                console.log(`Camera started: ${this.videoElement.videoWidth}x${this.videoElement.videoHeight}`);
+                resolve();
+              };
+              
+              const handleError = (error) => {
+                if (resolved) return;
+                resolved = true;
+                reject(error);
+              };
+              
+              this.videoElement.onloadedmetadata = () => {
+                this.videoElement.play()
+                  .then(handleSuccess)
+                  .catch(handleError);
+              };
+              
+              // For mobile devices, also try to resolve when video starts playing
+              this.videoElement.onplaying = () => {
+                if (!resolved && this.videoElement.videoWidth > 0) {
+                  handleSuccess();
+                }
+              };
+              
+              // Increase timeout for mobile devices and add retry logic
+              const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+              const timeoutDuration = isMobile ? 15000 : 8000;
+              
+              setTimeout(() => {
+                if (!resolved) {
+                  console.warn("Camera initialization timeout, attempting fallback...");
+                  // Try to force play if video element has dimensions
+                  if (this.videoElement.videoWidth > 0 && this.videoElement.videoHeight > 0) {
+                    handleSuccess();
+                  } else {
+                    handleError(new Error("Camera initialization timeout - please try again or check camera permissions"));
                   }
-                  statusElement.style.display = "block";
-                  statusElement.textContent = "Could not access back camera";
-                  setTimeout(() => {
-                    statusElement.style.display = "none";
-                  }, 3000);
                 }
+              }, timeoutDuration);
+            });
+
+          } catch (error) {
+            console.error("Camera access error:", error);
+            throw error;
+          }
+        }
+
+        setupCameraProcessing() {
+          // Use our own RAF loop instead of MediaPipe Camera to avoid conflicts on mobile
+          try {
+            // Stop any previous processing loop
+            this.stopProcessingLoop();
+
+            // Start monitoring the stream health
+            this.monitorVideoStream();
+
+            // Start the frame processing loop
+            this.startProcessingLoop();
+
+            console.log("Camera processing loop started");
+            const indicator = document.getElementById("hand-status-indicator");
+            if (indicator) indicator.textContent = "Active";
+          } catch (error) {
+            console.error("Error setting up camera processing:", error);
+            const indicator = document.getElementById("hand-status-indicator");
+            if (indicator) indicator.textContent = "Setup Failed";
+          }
+        }
+
+        startProcessingLoop() {
+          if (this.rafId) {
+            cancelAnimationFrame(this.rafId);
+            this.rafId = null;
+          }
+          this._processing = false;
+
+          const process = async () => {
+            if (!this.isTracking || !this.hands || !this.videoElement) {
+              this.rafId = requestAnimationFrame(process);
+              return;
+            }
+
+            if (this.videoElement.readyState >= 2 && !this._processing) {
+              // Check if video stream is still active
+              if (this.videoElement.videoWidth === 0 || this.videoElement.videoHeight === 0) {
+                console.warn("Video stream dimensions are zero, skipping frame");
+                this.rafId = requestAnimationFrame(process);
+                return;
+              }
+
+              this._processing = true;
+              try {
+                await this.hands.send({ image: this.videoElement });
+              } catch (e) {
+                console.warn("Error processing frame:", e);
+              } finally {
+                this._processing = false;
+              }
+            }
+
+            this.rafId = requestAnimationFrame(process);
+          };
+
+          this.rafId = requestAnimationFrame(process);
+        }
+
+        stopProcessingLoop() {
+          if (this.rafId) {
+            cancelAnimationFrame(this.rafId);
+            this.rafId = null;
+          }
+          this._processing = false;
+        }
+
+        monitorVideoStream() {
+          // Monitor video stream health
+          if (this.streamMonitor) {
+            clearInterval(this.streamMonitor);
+          }
+          
+          this.streamMonitor = setInterval(() => {
+            if (this.isTracking && this.videoElement) {
+              const tracks = this.videoElement.srcObject?.getVideoTracks();
+              if (!tracks || tracks.length === 0 || tracks[0].readyState === 'ended') {
+                console.warn("Video track ended, attempting recovery...");
+                this.handleStreamLoss();
+              } else if (this.videoElement.videoWidth === 0 || this.videoElement.videoHeight === 0) {
+                console.warn("Video dimensions lost, stream may be inactive");
+              }
+            }
+          }, 2000);
+        }
+
+        async handleStreamLoss() {
+          if (this.isRecovering) return;
+          this.isRecovering = true;
+          
+          console.log("Attempting to recover camera stream...");
+          document.getElementById("hand-status-indicator").textContent = "Recovering...";
+          
+          try {
+            // Stop current resources
+            if (this.camera) {
+              await this.camera.stop();
+              this.camera = null;
+            }
+            
+            // Wait a moment
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Restart camera
+            await this.startCamera();
+            this.setupCameraProcessing();
+            
+            console.log("Camera stream recovered successfully");
+            this.showNotification("Camera recovered");
+          } catch (error) {
+            console.error("Failed to recover camera stream:", error);
+            document.getElementById("hand-status-indicator").textContent = "Recovery Failed";
+            this.showNotification("Camera recovery failed - please refresh the page");
+          } finally {
+            this.isRecovering = false;
+          }
+        }
+
+        async showCameraSelectionDialog() {
+          // Create modal for camera selection
+          const modal = document.createElement("div");
+          modal.style.position = "fixed";
+          modal.style.top = "0";
+          modal.style.left = "0";
+          modal.style.width = "100%";
+          modal.style.height = "100%";
+          modal.style.backgroundColor = "rgba(0, 0, 0, 0.8)";
+          modal.style.display = "flex";
+          modal.style.flexDirection = "column";
+          modal.style.justifyContent = "center";
+          modal.style.alignItems = "center";
+          modal.style.zIndex = "3000";
+
+          // Create container for camera selection
+          const container = document.createElement("div");
+          container.style.backgroundColor = "white";
+          container.style.padding = "20px";
+          container.style.borderRadius = "10px";
+          container.style.maxWidth = "80%";
+          container.style.maxHeight = "80%";
+          container.style.overflow = "auto";
+          container.style.textAlign = "center";
+
+          // Add title
+          const title = document.createElement("h3");
+          title.textContent = "Select Camera";
+          title.style.marginBottom = "15px";
+          container.appendChild(title);
+
+          // Add loading text
+          const loadingText = document.createElement("div");
+          loadingText.textContent = "Loading cameras...";
+          loadingText.style.margin = "20px 0";
+          container.appendChild(loadingText);
+
+          modal.appendChild(container);
+          document.body.appendChild(modal);
+
+          // Disable the switch camera button while dialog is open
+          const switchBtn = document.getElementById("switchCamera");
+          switchBtn.disabled = true;
+
+          try {
+            // Stop current camera resources
+            if (this.camera) {
+              try {
+                await this.camera.stop();
+                console.log("Stopped MediaPipe camera");
+              } catch (e) {
+                console.warn("Error stopping MediaPipe camera:", e);
+              }
+              this.camera = null;
+            }
+
+            if (this.videoElement.srcObject) {
+              const tracks = this.videoElement.srcObject.getTracks();
+              tracks.forEach(track => track.stop());
+              this.videoElement.srcObject = null;
+            }
+
+            // Create button container with flex layout
+            const buttonContainer = document.createElement("div");
+            buttonContainer.style.display = "flex";
+            buttonContainer.style.flexDirection = "column";
+            buttonContainer.style.alignItems = "center";
+            buttonContainer.style.marginTop = "20px";
+            container.appendChild(buttonContainer);
+
+            // Add close button
+            const closeButton = document.createElement("button");
+            closeButton.textContent = "Cancel";
+            closeButton.style.padding = "10px 20px";
+            closeButton.style.backgroundColor = "#f44336";
+            closeButton.style.color = "white";
+            closeButton.style.border = "none";
+            closeButton.style.borderRadius = "5px";
+            closeButton.style.cursor = "pointer";
+            closeButton.style.marginTop = "20px";
+            closeButton.onclick = () => {
+              document.body.removeChild(modal);
+              // Re-enable the switch camera button
+              switchBtn.disabled = false;
+              switchBtn.textContent = this.currentFacingMode.includes("user")
+                ? "📷 Switch to Back Camera"
+                : "📷 Switch to Front Camera";
+            };
+
+            // Enumerate video devices
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === "videoinput");
+
+            // Remove loading text
+            container.removeChild(loadingText);
+
+            if (videoDevices.length === 0) {
+              const noDevicesText = document.createElement("div");
+              noDevicesText.textContent = "No cameras found";
+              noDevicesText.style.margin = "20px 0";
+              container.appendChild(noDevicesText);
+            } else {
+              // Add instruction text
+              const instructionText = document.createElement("div");
+              instructionText.textContent = "Select a camera:";
+              instructionText.style.margin = "10px 0";
+              container.appendChild(instructionText);
+
+              // Create a button for each camera
+              videoDevices.forEach((device, index) => {
+                const button = document.createElement("button");
+                
+                // Determine if camera is front or back based on label
+                const label = device.label || `Camera ${index + 1}`;
+                let cameraType = "";
+                
+                if (label.toLowerCase().includes("front") || 
+                    label.toLowerCase().includes("user") || 
+                    label.toLowerCase().includes("selfie")) {
+                  cameraType = " (Front)";
+                } else if (label.toLowerCase().includes("back") || 
+                         label.toLowerCase().includes("rear") || 
+                         label.toLowerCase().includes("environment")) {
+                  cameraType = " (Back)";
+                }
+                
+                button.textContent = `${label}${cameraType}`;
+                button.style.padding = "10px 15px";
+                button.style.margin = "5px 0";
+                button.style.backgroundColor = "#4ECDC4";
+                button.style.color = "white";
+                button.style.border = "none";
+                button.style.borderRadius = "5px";
+                button.style.cursor = "pointer";
+                button.style.width = "100%";
+                button.style.textAlign = "left";
+                button.style.overflow = "hidden";
+                button.style.textOverflow = "ellipsis";
+                button.style.whiteSpace = "nowrap";
+                
+                button.onclick = async () => {
+                  // Store selected camera in local storage
+                  localStorage.setItem("preferredCameraId", device.deviceId);
+                  localStorage.setItem("preferredCameraLabel", label);
+                  
+                  // Determine facing mode from label
+                  if (label.toLowerCase().includes("front") || 
+                      label.toLowerCase().includes("user") || 
+                      label.toLowerCase().includes("selfie")) {
+                    this.currentFacingMode = "user";
+                  } else if (label.toLowerCase().includes("back") || 
+                           label.toLowerCase().includes("rear") || 
+                           label.toLowerCase().includes("environment")) {
+                    this.currentFacingMode = "environment";
+                  } else {
+                    // If we can't determine from label, use the opposite of current
+                    this.currentFacingMode = this.currentFacingMode.includes("user") 
+                      ? "environment" 
+                      : "user";
+                  }
+                  
+                  console.log(`Selected camera: ${label}, facing mode: ${this.currentFacingMode}`);
+                  
+                  // Remove modal
+                  document.body.removeChild(modal);
+                  
+                  // Stop current camera tracks
+                  if (this.videoElement.srcObject) {
+                    const tracks = this.videoElement.srcObject.getTracks();
+                    tracks.forEach(track => track.stop());
+                    this.videoElement.srcObject = null;
+                  }
+                  
+                  // Stop MediaPipe camera if running
+                  if (this.camera) {
+                    try {
+                      await this.camera.stop();
+                      console.log("Stopped MediaPipe camera");
+                    } catch (e) {
+                      console.warn("Error stopping MediaPipe camera:", e);
+                    }
+                    this.camera = null;
+                  }
+                  
+                  // Create status element
+                  const statusElement = document.createElement("div");
+                  statusElement.textContent = `Switching to ${label}...`;
+                  statusElement.style.position = "fixed";
+                  statusElement.style.top = "50%";
+                  statusElement.style.left = "50%";
+                  statusElement.style.transform = "translate(-50%, -50%)";
+                  statusElement.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
+                  statusElement.style.color = "white";
+                  statusElement.style.padding = "15px 25px";
+                  statusElement.style.borderRadius = "10px";
+                  statusElement.style.zIndex = "3000";
+                  document.body.appendChild(statusElement);
+                  
+                  // Wait a bit for resources to be released
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  
+                  // Set up camera constraints with selected device
+                  const constraints = {
+                    video: {
+                      deviceId: { exact: device.deviceId },
+                      width: { ideal: 640, max: 1280 },
+                      height: { ideal: 480, max: 720 }
+                    },
+                    audio: false
+                  };
+                  
+                  try {
+                    // Get user media with constraints
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    this.videoElement.srcObject = stream;
+                    
+                    // Wait for video to be ready
+                    await new Promise((resolve, reject) => {
+                      this.videoElement.onloadedmetadata = () => {
+                        this.videoElement.play()
+                          .then(resolve)
+                          .catch(reject);
+                      };
+                      setTimeout(() => resolve(), 3000); // Fallback timeout
+                    });
+                    
+                    // Update MediaPipe selfieMode based on camera mode
+                    if (this.hands) {
+                      // For front camera (user), we need to set selfieMode to true
+                      const isFrontCamera = this.currentFacingMode.includes("user");
+                      await this.hands.setOptions({
+                        maxNumHands: 1,
+                        modelComplexity: 1,
+                        minDetectionConfidence: 0.7,
+                        minTrackingConfidence: 0.5,
+                        // Set selfieMode based on camera mode - true for front camera, false for back camera
+                        selfieMode: isFrontCamera,
+                      });
+                      console.log(`MediaPipe selfieMode updated to: ${isFrontCamera} for ${this.currentFacingMode} camera`);
+                    }
+                    
+                    // Start camera processing
+                    await this.setupCameraProcessing();
+                    
+                    // Update switch camera button
+                    switchBtn.disabled = false;
+                    switchBtn.textContent = this.currentFacingMode.includes("user")
+                      ? "📷 Switch to Back Camera"
+                      : "📷 Switch to Front Camera";
+                    
+                    // Remove status element
+                    document.body.removeChild(statusElement);
+                    
+                  } catch (error) {
+                    console.error("Failed to start camera:", error);
+                    statusElement.textContent = `Error: ${error.message}`;
+                    
+                    // Remove status after a delay
+                    setTimeout(() => {
+                      if (document.body.contains(statusElement)) {
+                        document.body.removeChild(statusElement);
+                      }
+                    }, 3000);
+                    
+                    // Re-enable switch camera button
+                    switchBtn.disabled = false;
+                    switchBtn.textContent = this.currentFacingMode.includes("user")
+                      ? "📷 Switch to Back Camera"
+                      : "📷 Switch to Front Camera";
+                  }
+                };
+                
+                buttonContainer.appendChild(button);
+              });
+            }
+            
+            container.appendChild(closeButton);
+            
+          } catch (error) {
+            console.error("Error in camera selection dialog:", error);
+            // Re-enable switch camera button
+            switchBtn.disabled = false;
+            switchBtn.textContent = this.currentFacingMode.includes("user")
+              ? "📷 Switch to Back Camera"
+              : "📷 Switch to Front Camera";
+            
+            // Remove modal
+            if (document.body.contains(modal)) {
+              document.body.removeChild(modal);
+            }
+            
+            this.showNotification(`Error: ${error.message}`);
+          }
+        }
+        
+        async switchCamera() {
+          if (!this.isTracking) return;
+
+          const btn = document.getElementById("switchCamera");
+          btn.disabled = true;
+          btn.textContent = "🔄 Switching...";
+
+          // Clear preferred camera
+          localStorage.removeItem("preferredCameraId");
+          localStorage.removeItem("preferredCameraLabel");
+
+          // Show camera selection dialog
+          await this.showCameraSelectionDialog();
+          return;
+        }
+
+        getCurrentCameraDeviceId() {
+          if (this.videoElement.srcObject) {
+            const tracks = this.videoElement.srcObject.getVideoTracks();
+            if (tracks.length > 0) {
+              const settings = tracks[0].getSettings();
+              return settings.deviceId;
+            }
+          }
+          return localStorage.getItem("preferredCameraId");
+        }
+
+        findNextCamera(currentDeviceId) {
+          if (this.availableCameras.length <= 1) return null;
+          
+          const currentIndex = this.availableCameras.findIndex(camera => camera.deviceId === currentDeviceId);
+          
+          if (currentIndex === -1) {
+            // Current camera not found, return first available
+            return this.availableCameras[0];
+          }
+          
+          // Return next camera, or first if at end
+          const nextIndex = (currentIndex + 1) % this.availableCameras.length;
+          return this.availableCameras[nextIndex];
+        }
+
+        async startCameraWithDevice(deviceId) {
+          try {
+            // Stop existing stream
+            if (this.videoElement.srcObject) {
+              const tracks = this.videoElement.srcObject.getTracks();
+              tracks.forEach(track => track.stop());
+              this.videoElement.srcObject = null;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 300));
+
+            const constraints = {
+              video: {
+                deviceId: { exact: deviceId },
+                width: { ideal: 640, max: 1280 },
+                height: { ideal: 480, max: 720 },
+              },
+              audio: false,
+            };
+
+            console.log("Starting camera with device:", deviceId);
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            
+            this.videoElement.srcObject = stream;
+
+            // Update camera info
+            const tracks = stream.getVideoTracks();
+            if (tracks.length > 0) {
+              const settings = tracks[0].getSettings();
+              console.log("Camera settings:", settings);
+              
+              if (settings.facingMode) {
+                this.currentFacingMode = settings.facingMode;
               }
             }
 
             return new Promise((resolve, reject) => {
               this.videoElement.onloadedmetadata = () => {
-                this.videoElement
-                  .play()
+                this.videoElement.play()
                   .then(() => {
-                    console.log(
-                      `Camera started: ${this.videoElement.videoWidth}x${this.videoElement.videoHeight}`
-                    );
+                    console.log(`Camera started: ${this.videoElement.videoWidth}x${this.videoElement.videoHeight}`);
                     resolve();
                   })
-                  .catch((playError) => {
-                    console.error(`Error playing video: ${playError.message}`);
-                    reject(playError);
-                  });
+                  .catch(reject);
               };
-              this.videoElement.onerror = (e) => {
-                console.error(`Video element error: ${e}`);
-                reject(new Error(`Video element error: ${e}`));
-              };
-
-              // Set a timeout in case the camera doesn't initialize
-              const timeoutId = setTimeout(() => {
-                reject(new Error("Camera initialization timeout"));
-              }, 8000);
-
-              // Clear the timeout if metadata loads successfully
-              this.videoElement.addEventListener(
-                "loadedmetadata",
-                () => {
-                  clearTimeout(timeoutId);
-                },
-                { once: true }
-              );
+              
+              setTimeout(() => reject(new Error("Camera initialization timeout")), 8000);
             });
+
           } catch (error) {
-            console.error(
-              `Camera access error: ${error.name} - ${error.message}`
-            );
-            throw error; // Throw the original error to preserve error type
+            console.error("Camera device access error:", error);
+            throw error;
           }
         }
 
-        setupCameraProcessing() {
-          // Properly stop and clean up existing camera
-          if (this.camera) {
-            try {
-              this.camera.stop();
-              console.log("Previous camera processing stopped");
-            } catch (e) {
-              console.warn("Error stopping previous camera:", e);
+        showNotification(message) {
+          const notification = document.createElement('div');
+          notification.textContent = message;
+          notification.style.position = 'fixed';
+          notification.style.top = '50%';
+          notification.style.left = '50%';
+          notification.style.transform = 'translate(-50%, -50%)';
+          notification.style.backgroundColor = 'rgba(0,0,0,0.7)';
+          notification.style.color = 'white';
+          notification.style.padding = '10px 20px';
+          notification.style.borderRadius = '20px';
+          notification.style.zIndex = '1000';
+          document.body.appendChild(notification);
+
+          setTimeout(() => {
+            if (document.body.contains(notification)) {
+              document.body.removeChild(notification);
             }
-            this.camera = null;
+          }, 3000);
+        }
+
+        resetGame() {
+          this.score = 0;
+          this.gameTime = 0;
+          this.gameStartTime = Date.now();
+          this.bubbles = [];
+          this.particles = [];
+
+          const handStatus = document.getElementById("hand-status-indicator");
+          if (handStatus) {
+            handStatus.textContent = "Active";
+            handStatus.style.color = "#4ECDC4";
           }
 
-          // Create a new camera processor with error handling
-          try {
-            this.camera = new Camera(this.videoElement, {
-              onFrame: async () => {
-                if (
-                  this.hands &&
-                  this.isTracking &&
-                  this.videoElement.readyState >= 2
-                ) {
-                  try {
-                    await this.hands.send({ image: this.videoElement });
-                  } catch (e) {
-                    console.warn("Error processing hand tracking frame:", e);
-                  }
-                }
-              },
-              width: 480, // Lower resolution for better performance
-              height: 360, // Lower resolution for better performance
-            });
+          document.getElementById("score").textContent = "0";
+          document.getElementById("game-time").textContent = "0:00";
+          document.getElementById("balloon-count").textContent = "0";
+        }
 
-            // Start camera with error handling
-            this.camera
-              .start()
-              .then(() => {
-                console.log("Camera processing started successfully");
-                document.getElementById("hand-status-indicator").textContent =
-                  "Active";
-              })
-              .catch((error) => {
-                console.error("Failed to start camera processing:", error);
-                document.getElementById("hand-status-indicator").textContent =
-                  "Error - Try Again";
-              });
+        async showCameraInfo() {
+          try {
+            await this.enumerateCameras();
+            
+            const modal = document.createElement('div');
+            modal.style.position = 'fixed';
+            modal.style.top = '0';
+            modal.style.left = '0';
+            modal.style.width = '100%';
+            modal.style.height = '100%';
+            modal.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+            modal.style.display = 'flex';
+            modal.style.justifyContent = 'center';
+            modal.style.alignItems = 'center';
+            modal.style.zIndex = '2000';
+
+            const content = document.createElement('div');
+            content.style.backgroundColor = 'white';
+            content.style.padding = '20px';
+            content.style.borderRadius = '10px';
+            content.style.maxWidth = '80%';
+            content.style.maxHeight = '80%';
+            content.style.overflow = 'auto';
+
+            content.innerHTML = `
+              <h3>Camera Information</h3>
+              <p><strong>Current Camera:</strong> ${this.currentFacingMode}</p>
+              <p><strong>Resolution:</strong> ${this.videoElement.videoWidth}x${this.videoElement.videoHeight}</p>
+              <h4>Available Cameras (${this.availableCameras.length}):</h4>
+              <ul>
+                ${this.availableCameras.map((camera, index) => 
+                  `<li>${index + 1}. ${camera.label || 'Unknown Camera'}</li>`
+                ).join('')}
+              </ul>
+              <button onclick="this.parentElement.parentElement.remove()" 
+                style="padding: 10px 20px; background: #4ECDC4; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                Close
+              </button>
+            `;
+
+            modal.appendChild(content);
+            document.body.appendChild(modal);
+
           } catch (error) {
-            console.error("Error setting up camera processing:", error);
-            document.getElementById("hand-status-indicator").textContent =
-              "Setup Failed";
+            this.showNotification('Could not retrieve camera info');
           }
         }
 
         onHandResults(results) {
-          // Update hand status indicator less frequently to reduce DOM operations
-          if (
-            !this.lastStatusUpdate ||
-            performance.now() - this.lastStatusUpdate > 500
-          ) {
+          if (!this.lastStatusUpdate || performance.now() - this.lastStatusUpdate > 500) {
             const handStatus = document.getElementById("hand-status-indicator");
             if (handStatus && this.isTracking) {
-              if (
-                results.multiHandLandmarks &&
-                results.multiHandLandmarks.length > 0
-              ) {
-                // Check if handedness information is available
-                if (
-                  results.multiHandedness &&
-                  results.multiHandedness.length > 0
-                ) {
+              if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                if (results.multiHandedness && results.multiHandedness.length > 0) {
                   const handType = results.multiHandedness[0].label;
                   handStatus.textContent = `Detected (${handType})`;
                 } else {
                   handStatus.textContent = "Detected";
                 }
-                handStatus.style.color = "#4CAF50"; // Green for active detection
+                handStatus.style.color = "#4CAF50";
               } else {
                 handStatus.textContent = "Active";
-                handStatus.style.color = "#4ECDC4"; // Teal for active but not detecting
+                handStatus.style.color = "#4ECDC4";
               }
             }
             this.lastStatusUpdate = performance.now();
           }
 
-          if (
-            results.multiHandLandmarks &&
-            results.multiHandLandmarks.length > 0
-          ) {
+          if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             this.handLandmarks = results.multiHandLandmarks[0];
-
-            // Store handedness information if available
             if (results.multiHandedness && results.multiHandedness.length > 0) {
-              this.handType = results.multiHandedness[0].label; // 'Left' or 'Right'
-              console.log(`Detected ${this.handType} hand`);
+              this.handType = results.multiHandedness[0].label;
             }
-
-            this.detectPinchGesture();
+            // Pinch no longer required for popping; keep landmarks for optional visuals
+            // this.detectPinchGesture();
           } else {
             this.handLandmarks = null;
             this.handType = null;
           }
         }
 
-        detectPinchGesture() {
-          if (!this.handLandmarks) return;
+        // Pinch detection removed; using tap-to-burst only
 
-          const fingerTip = this.handLandmarks[this.fingerTipIndex];
-          const thumbTip = this.handLandmarks[this.thumbTipIndex];
 
-          // Calculate distance between finger tip and thumb tip
-          const distance = Math.sqrt(
-            Math.pow(fingerTip.x - thumbTip.x, 2) +
-              Math.pow(fingerTip.y - thumbTip.y, 2) +
-              Math.pow(fingerTip.z - thumbTip.z, 2)
-          );
+        // onPinchGesture removed; using tap-to-burst only
 
-          const isPinching = distance < this.pinchThreshold;
-
-          // Detect pinch gesture (on transition from not pinching to pinching)
-          if (isPinching && !this.lastPinchState) {
-            // Use the finger tip position for popping (this will be flipped in onPinchGesture)
-            this.onPinchGesture(fingerTip);
-          }
-
-          this.lastPinchState = isPinching;
-        }
-
-        onPinchGesture(fingerPosition) {
-          const width = this.canvasElement.width;
-          const height = this.canvasElement.height;
-
-          // Use the same flipping logic as in drawHandSkeleton
-          const isFrontCamera = this.currentFacingMode.includes("user");
-          const isRightHand = this.handType === "Right";
-
-          let shouldFlipX;
-          if (isFrontCamera) {
-            shouldFlipX = !isRightHand; // Flip for left hand in front camera
-          } else {
-            shouldFlipX = true; // Always flip for back camera
-          }
-
-          const fingerX = shouldFlipX
-            ? width - fingerPosition.x * width
-            : fingerPosition.x * width;
-          const fingerY = fingerPosition.y * height;
-
-          // Check if finger is pointing at any bubble
-          for (let i = this.bubbles.length - 1; i >= 0; i--) {
-            const bubble = this.bubbles[i];
-            const distance = Math.sqrt(
-              Math.pow(fingerX - bubble.x, 2) + Math.pow(fingerY - bubble.y, 2)
-            );
-
-            if (distance < bubble.radius) {
-              // Pop the bubble!
-              this.popBubble(i, fingerX, fingerY);
-              break; // Only pop one bubble per gesture
-            }
-          }
-        }
 
         popBubble(index, x, y) {
           this.bubbles.splice(index, 1);
           this.score++;
           document.getElementById("score").textContent = this.score;
 
-          // Create celebration effect
           this.createCelebration(x, y);
-
-          // Create bubble pop effect
           this.createPopEffect(x, y);
-          
-          // Take screenshot and download
           this.takeScreenshotAndDownload();
         }
         
         takeScreenshotAndDownload() {
-          // Create a new canvas to capture the entire game view
           const screenshotCanvas = document.createElement('canvas');
           screenshotCanvas.width = this.canvasElement.width;
           screenshotCanvas.height = this.canvasElement.height;
           const screenshotCtx = screenshotCanvas.getContext('2d');
           
-          // Draw the video feed first (if visible)
           if (this.videoElement && this.videoElement.videoWidth > 0) {
             screenshotCtx.drawImage(this.videoElement, 0, 0, screenshotCanvas.width, screenshotCanvas.height);
           }
           
-          // Draw the game canvas on top (bubbles, particles, hand skeleton)
           screenshotCtx.drawImage(this.canvasElement, 0, 0);
           
-          // Add score overlay
           screenshotCtx.fillStyle = 'rgba(0, 0, 0, 0.5)';
           screenshotCtx.fillRect(10, 10, 150, 40);
           screenshotCtx.font = 'bold 20px Arial';
           screenshotCtx.fillStyle = 'white';
           screenshotCtx.fillText(`Score: ${this.score}`, 20, 35);
           
-          // Convert to image data URL
           const imageDataURL = screenshotCanvas.toDataURL('image/png');
           
-          // Create download link
           const downloadLink = document.createElement('a');
           downloadLink.href = imageDataURL;
           downloadLink.download = `bubble-pop-score-${this.score}-${new Date().getTime()}.png`;
           
-          // Trigger download
           document.body.appendChild(downloadLink);
           downloadLink.click();
           document.body.removeChild(downloadLink);
           
-          // Show notification
           this.showScreenshotNotification();
         }
         
         showScreenshotNotification() {
-          // Create notification element
           const notification = document.createElement('div');
           notification.textContent = '📸 Screenshot saved!';
           notification.style.position = 'fixed';
@@ -1422,10 +1551,8 @@
           notification.style.zIndex = '1000';
           notification.style.fontWeight = 'bold';
           
-          // Add to document
           document.body.appendChild(notification);
           
-          // Remove after 3 seconds
           setTimeout(() => {
             document.body.removeChild(notification);
           }, 3000);
@@ -1445,19 +1572,17 @@
         }
 
         createPopEffect(x, y) {
-          // Create particle effect for bubble pop - fewer particles, water-like colors
           for (let i = 0; i < 6; i++) {
             const particle = {
               x: x,
               y: y,
-              vx: (Math.random() - 0.5) * 6, // Slower movement
-              vy: (Math.random() - 0.5) * 6 - 2, // Slight upward bias
-              life: 15, // Shorter lifespan
-              color: `hsla(${180 + Math.random() * 40}, 70%, 70%, 0.7)`, // Blue-ish transparent colors
-              size: 2 + Math.random() * 3, // Varied droplet sizes
+              vx: (Math.random() - 0.5) * 6,
+              vy: (Math.random() - 0.5) * 6 - 2,
+              life: 15,
+              color: `hsla(${180 + Math.random() * 40}, 70%, 70%, 0.7)`,
+              size: 2 + Math.random() * 3,
             };
 
-            // Add particles to a temporary array for rendering
             if (!this.particles) this.particles = [];
             this.particles.push(particle);
           }
@@ -1468,47 +1593,39 @@
 
           const bubble = {
             x: Math.random() * this.canvasElement.width,
-            y: this.canvasElement.height + 50, // Start below screen
-            radius: 15 + Math.random() * 25, // Varied bubble sizes
-            color: `hsla(${180 + Math.random() * 40}, 70%, 70%, 0.7)`, // Blue-ish transparent colors
+            y: this.canvasElement.height + 50,
+            radius: 15 + Math.random() * 25,
+            color: `hsla(${180 + Math.random() * 40}, 70%, 70%, 0.7)`,
             speed: this.bubbleSpeed + Math.random() * 1.5,
             bobOffset: Math.random() * Math.PI * 2,
-            bobSpeed: 0.03 + Math.random() * 0.03, // More bobbing for bubbles
-            lastX: 0, // For gradient caching
-            lastY: 0, // For gradient caching
+            bobSpeed: 0.03 + Math.random() * 0.03,
+            lastX: 0,
+            lastY: 0,
           };
 
           this.bubbles.push(bubble);
         }
 
         updateBubbles() {
-          // Update existing bubbles
           for (let i = this.bubbles.length - 1; i >= 0; i--) {
             const bubble = this.bubbles[i];
 
-            // Move bubble up with more random wobbling motion
             bubble.y -= bubble.speed;
-            bubble.x += Math.sin(bubble.bobOffset) * 1.2; // More horizontal movement
+            bubble.x += Math.sin(bubble.bobOffset) * 1.2;
             bubble.bobOffset += bubble.bobSpeed;
 
-            // Add slight random movement for more realistic bubble effect
             bubble.x += (Math.random() - 0.5) * 0.8;
-
-            // Gradually slow down as bubbles rise (like real bubbles)
             bubble.speed = Math.max(0.5, bubble.speed * 0.995);
 
-            // Remove bubbles that have gone off screen
             if (bubble.y + bubble.radius < 0) {
               this.bubbles.splice(i, 1);
             }
           }
 
-          // Spawn new bubbles
           if (Math.random() < this.bubbleSpawnRate) {
             this.spawnBubble();
           }
 
-          // Update particles
           if (this.particles) {
             for (let i = this.particles.length - 1; i >= 0; i--) {
               const particle = this.particles[i];
@@ -1528,12 +1645,9 @@
           const width = this.canvasElement.width;
           const height = this.canvasElement.height;
 
-          // Clear canvas
           ctx.clearRect(0, 0, width, height);
 
-          // Draw bubbles - optimize by caching gradients and reducing operations
           this.bubbles.forEach((bubble) => {
-            // Only create gradient if it doesn't exist or bubble moved significantly
             if (
               !bubble.cachedGradient ||
               Math.abs(bubble.lastX - bubble.x) > 5 ||
@@ -1542,7 +1656,6 @@
               bubble.lastX = bubble.x;
               bubble.lastY = bubble.y;
 
-              // Create and cache the bubble gradient
               bubble.cachedGradient = ctx.createRadialGradient(
                 bubble.x - bubble.radius * 0.3,
                 bubble.y - bubble.radius * 0.3,
@@ -1556,13 +1669,11 @@
               bubble.cachedGradient.addColorStop(1, "rgba(255, 255, 255, 0.2)");
             }
 
-            // Draw bubble
             ctx.fillStyle = bubble.cachedGradient;
             ctx.beginPath();
             ctx.arc(bubble.x, bubble.y, bubble.radius, 0, 2 * Math.PI);
             ctx.fill();
 
-            // Bubble highlight/reflection
             ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
             ctx.beginPath();
             ctx.arc(
@@ -1574,7 +1685,6 @@
             );
             ctx.fill();
 
-            // Second smaller highlight
             ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
             ctx.beginPath();
             ctx.arc(
@@ -1587,11 +1697,10 @@
             ctx.fill();
           });
 
-          // Draw bubble pop particles
           if (this.particles) {
             this.particles.forEach((particle) => {
               ctx.fillStyle = particle.color;
-              ctx.globalAlpha = particle.life / 15; // Adjusted for shorter lifespan
+              ctx.globalAlpha = particle.life / 15;
               ctx.beginPath();
               ctx.arc(
                 particle.x,
@@ -1605,7 +1714,6 @@
             });
           }
 
-          // Draw hand skeleton if tracking
           if (this.handLandmarks) {
             this.drawHandSkeleton();
           }
@@ -1616,27 +1724,16 @@
           const width = this.canvasElement.width;
           const height = this.canvasElement.height;
 
-          // Draw finger tip (aiming point)
           const fingerTip = this.handLandmarks[this.fingerTipIndex];
 
-          // Determine if we need to flip the X coordinate based on camera mode and hand type
           const isFrontCamera = this.currentFacingMode.includes("user");
           const isRightHand = this.handType === "Right";
 
-          // Logic for correct hand mirroring:
-          // 1. Front camera (selfie mode):
-          //    - Right hand appears as left on screen, so we flip for right hand
-          //    - Left hand appears as right on screen, so we flip for left hand
-          // 2. Back camera (environment mode):
-          //    - We already flip for all hands, but need to adjust based on handedness
-
           let shouldFlipX;
           if (isFrontCamera) {
-            // For front camera, flip if detected hand doesn't match visual hand
-            shouldFlipX = !isRightHand; // Flip for left hand in front camera
+            shouldFlipX = !isRightHand;
           } else {
-            // For back camera, we already flip everything, but need to adjust based on hand type
-            shouldFlipX = true; // Always flip for back camera
+            shouldFlipX = true;
           }
 
           const fingerX = shouldFlipX
@@ -1644,14 +1741,12 @@
             : fingerTip.x * width;
           const fingerY = fingerTip.y * height;
 
-          // Draw aiming crosshair
-          ctx.strokeStyle = this.lastPinchState ? "#FF6B6B" : "#4ECDC4";
+          ctx.strokeStyle = "#4ECDC4";
           ctx.lineWidth = 3;
           ctx.beginPath();
           ctx.arc(fingerX, fingerY, 15, 0, 2 * Math.PI);
           ctx.stroke();
 
-          // Draw crosshair lines
           ctx.beginPath();
           ctx.moveTo(fingerX - 10, fingerY);
           ctx.lineTo(fingerX + 10, fingerY);
@@ -1659,49 +1754,20 @@
           ctx.lineTo(fingerX, fingerY + 10);
           ctx.stroke();
 
-          // Draw simple hand outline (optional)
           ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
           ctx.lineWidth = 2;
           const handConnections = [
-            [0, 1],
-            [1, 2],
-            [2, 3],
-            [3, 4], // Thumb
-            [0, 5],
-            [5, 6],
-            [6, 7],
-            [7, 8], // Index
-            [0, 9],
-            [9, 10],
-            [10, 11],
-            [11, 12], // Middle
-            [0, 13],
-            [13, 14],
-            [14, 15],
-            [15, 16], // Ring
-            [0, 17],
-            [17, 18],
-            [18, 19],
-            [19, 20], // Pinky
-            [5, 9],
-            [9, 13],
-            [13, 17], // Palm
+            [0, 1], [1, 2], [2, 3], [3, 4],
+            [0, 5], [5, 6], [6, 7], [7, 8],
+            [0, 9], [9, 10], [10, 11], [11, 12],
+            [0, 13], [13, 14], [14, 15], [15, 16],
+            [0, 17], [17, 18], [18, 19], [19, 20],
+            [5, 9], [9, 13], [13, 17],
           ];
 
           handConnections.forEach((connection) => {
             const start = this.handLandmarks[connection[0]];
             const end = this.handLandmarks[connection[1]];
-
-            // Use the same flipping logic as for the finger tip
-            const isFrontCamera = this.currentFacingMode.includes("user");
-            const isRightHand = this.handType === "Right";
-
-            let shouldFlipX;
-            if (isFrontCamera) {
-              shouldFlipX = !isRightHand; // Flip for left hand in front camera
-            } else {
-              shouldFlipX = true; // Always flip for back camera
-            }
 
             const startX = shouldFlipX
               ? width - start.x * width
@@ -1715,10 +1781,22 @@
             ctx.lineTo(endX, endY);
             ctx.stroke();
           });
+
+          // Auto-burst when crosshair overlaps a bubble
+          if (this.gameStarted && this.bubbles && this.bubbles.length) {
+            for (let i = this.bubbles.length - 1; i >= 0; i--) {
+              const b = this.bubbles[i];
+              const dx = fingerX - b.x;
+              const dy = fingerY - b.y;
+              if (dx * dx + dy * dy <= b.radius * b.radius) {
+                this.popBubble(i, fingerX, fingerY);
+                break;
+              }
+            }
+          }
         }
 
         updateGameStats() {
-          // Update game time
           if (this.gameStarted) {
             this.gameTime = Math.floor(
               (Date.now() - this.gameStartTime) / 1000
@@ -1730,7 +1808,6 @@
             ).textContent = `${minutes}:${seconds.toString().padStart(2, "0")}`;
           }
 
-          // Update bubble count
           document.getElementById("balloon-count").textContent =
             this.bubbles.length;
         }
@@ -1738,12 +1815,10 @@
         gameLoop() {
           if (!this.gameStarted) return;
 
-          // Use frame limiting for better performance
           const now = performance.now();
           if (!this.lastFrameTime) this.lastFrameTime = now;
 
-          // Limit to approximately 30 fps for better performance
-          const frameInterval = 33; // ~30 fps (1000ms / 30 = 33.33ms)
+          const frameInterval = 33;
           const elapsed = now - this.lastFrameTime;
 
           if (elapsed > frameInterval) {
@@ -1757,506 +1832,6 @@
           requestAnimationFrame(() => this.gameLoop());
         }
 
-        async switchCamera() {
-          if (!this.isTracking) return;
-
-          const btn = document.getElementById("switchCamera");
-          btn.disabled = true;
-          btn.textContent = "🔄 Switching...";
-
-          // Clear any preferred camera when manually switching
-          localStorage.removeItem("preferredCameraId");
-          localStorage.removeItem("preferredCameraLabel");
-          console.log(
-            "Cleared preferred camera settings for manual camera switch"
-          );
-
-          // On mobile, show camera selection dialog
-          if (this.isMobileDevice()) {
-            await this.showCameraSelectionDialog();
-            return;
-          }
-
-          // Create or get existing status element for better user feedback
-          let statusElement = document.getElementById("camera-switch-status");
-          if (!statusElement) {
-            statusElement = document.createElement("div");
-            statusElement.id = "camera-switch-status";
-            statusElement.style.position = "fixed";
-            statusElement.style.top = "50%";
-            statusElement.style.left = "50%";
-            statusElement.style.transform = "translate(-50%, -50%)";
-            statusElement.style.backgroundColor = "rgba(0,0,0,0.7)";
-            statusElement.style.color = "white";
-            statusElement.style.padding = "10px 20px";
-            statusElement.style.borderRadius = "20px";
-            statusElement.style.zIndex = "1000";
-            document.body.appendChild(statusElement);
-          }
-          statusElement.style.display = "block";
-          statusElement.textContent = "Switching camera...";
-
-          // Store previous mode in case we need to revert
-          const originalFacingMode = this.currentFacingMode;
-          console.log(`Current camera mode: ${originalFacingMode}`);
-
-          // Define the target facing mode we want to switch to
-          // IMPORTANT: Make sure we're explicitly setting the opposite mode
-          // Force the opposite mode regardless of what originalFacingMode reports
-          const targetFacingMode = originalFacingMode.includes("environment")
-            ? "user"
-            : "environment";
-          console.log(
-            `Attempting to switch from ${originalFacingMode} to ${targetFacingMode}`
-          );
-
-          // Check if device has multiple cameras before attempting to switch
-          let hasMultipleCameras = false;
-          try {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(
-              (device) => device.kind === "videoinput"
-            );
-            hasMultipleCameras = videoDevices.length > 1;
-            console.log(
-              `Detected ${videoDevices.length} video devices:`,
-              videoDevices.map((d) => d.label || "unnamed camera")
-            );
-
-            // Display detected cameras in the UI
-            statusElement.textContent = `Detected ${videoDevices.length} camera(s)`;
-
-            // Create a camera list element if it doesn't exist
-            let cameraListElement = document.getElementById("camera-list");
-            if (!cameraListElement) {
-              cameraListElement = document.createElement("div");
-              cameraListElement.id = "camera-list";
-              cameraListElement.style.position = "fixed";
-              cameraListElement.style.top = "calc(50% + 40px)";
-              cameraListElement.style.left = "50%";
-              cameraListElement.style.transform = "translate(-50%, 0)";
-              cameraListElement.style.backgroundColor = "rgba(0,0,0,0.7)";
-              cameraListElement.style.color = "white";
-              cameraListElement.style.padding = "10px 20px";
-              cameraListElement.style.borderRadius = "10px";
-              cameraListElement.style.zIndex = "999";
-              cameraListElement.style.maxWidth = "80%";
-              cameraListElement.style.fontSize = "14px";
-              document.body.appendChild(cameraListElement);
-            }
-
-            // Display camera information
-            cameraListElement.innerHTML = "";
-            if (videoDevices.length > 0) {
-              const cameraListTitle = document.createElement("div");
-              cameraListTitle.textContent = "Available cameras:";
-              cameraListTitle.style.fontWeight = "bold";
-              cameraListTitle.style.marginBottom = "5px";
-              cameraListElement.appendChild(cameraListTitle);
-
-              videoDevices.forEach((device, index) => {
-                const deviceInfo = document.createElement("div");
-                deviceInfo.textContent = `${index + 1}: ${
-                  device.label || "Camera " + (index + 1)
-                }`;
-                cameraListElement.appendChild(deviceInfo);
-              });
-            }
-            cameraListElement.style.display = "block";
-
-            // Hide camera list after a few seconds
-            setTimeout(() => {
-              if (cameraListElement) cameraListElement.style.display = "none";
-            }, 5000);
-
-            if (!hasMultipleCameras) {
-              console.warn(
-                "Device only has one camera, switching may not work as expected"
-              );
-              statusElement.textContent =
-                "Your device may only have one camera";
-              await new Promise((resolve) => setTimeout(resolve, 2000));
-            }
-          } catch (enumError) {
-            console.warn("Could not enumerate devices:", enumError);
-          }
-
-          try {
-            // First, stop MediaPipe camera processing
-            if (this.camera) {
-              try {
-                await this.camera.stop();
-                this.camera = null;
-                console.log("Stopped MediaPipe camera");
-              } catch (e) {
-                console.warn("Error stopping MediaPipe camera:", e);
-              }
-            }
-
-            // Stop current camera and its tracks
-            if (this.videoElement.srcObject) {
-              const tracks = this.videoElement.srcObject.getTracks();
-              tracks.forEach((track) => {
-                track.stop();
-                console.log(`Stopped track: ${track.kind}`);
-              });
-              this.videoElement.srcObject = null;
-            }
-
-            // Add a longer delay to ensure resources are released
-            statusElement.textContent = "Releasing camera resources...";
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-
-            // Force garbage collection by nullifying references
-            this.videoElement.srcObject = null;
-            this.camera = null;
-
-            // Additional delay after nullifying references
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-
-            // Switch camera mode
-            this.currentFacingMode = targetFacingMode;
-            console.log(`Switching to ${this.currentFacingMode} camera`);
-
-            // Restart camera with new facing mode
-            statusElement.textContent = "Starting new camera...";
-            try {
-              // Try with exact constraints first
-              try {
-                console.log("Trying with exact facingMode constraints");
-
-                // On mobile, we need to be more specific with constraints
-                // For mobile devices, we need to be more explicit about what we want
-                const exactConstraints = {
-                  video: {
-                    facingMode: { ideal: this.currentFacingMode }, // Changed from exact to ideal for better compatibility
-                    width: { ideal: 640, max: 1280 },
-                    height: { ideal: 480, max: 720 },
-                  },
-                  audio: false, // Explicitly disable audio to avoid permission issues
-                };
-
-                console.log(
-                  `Using ideal facingMode constraint: ${this.currentFacingMode}`
-                );
-
-                // Add a retry mechanism for mobile devices
-                let retryCount = 0;
-                const maxRetries = 2;
-
-                // Implement retry logic for getUserMedia
-                let stream;
-                let lastError;
-
-                while (retryCount <= maxRetries) {
-                  try {
-                    if (retryCount > 0) {
-                      console.log(
-                        `Retry attempt ${retryCount} for exact constraints...`
-                      );
-                      statusElement.textContent = `Retrying camera (${retryCount}/${maxRetries})...`;
-                      // Add a small delay between retries
-                      await new Promise((resolve) => setTimeout(resolve, 1000));
-                    }
-
-                    stream = await navigator.mediaDevices.getUserMedia(
-                      exactConstraints
-                    );
-                    console.log(
-                      "Successfully got stream with exact constraints"
-                    );
-                    this.videoElement.srcObject = stream;
-                    break; // Success, exit the retry loop
-                  } catch (err) {
-                    lastError = err;
-                    console.warn(`Attempt ${retryCount} failed:`, err);
-                    retryCount++;
-
-                    if (retryCount > maxRetries) {
-                      console.error(
-                        "All retry attempts failed with exact constraints"
-                      );
-                      throw lastError; // Throw the last error to trigger the fallback
-                    }
-                  }
-                }
-
-                await new Promise((resolve) => {
-                  this.videoElement.onloadedmetadata = () => {
-                    this.videoElement
-                      .play()
-                      .then(resolve)
-                      .catch((e) => {
-                        console.error("Error playing video:", e);
-                        resolve(); // Continue anyway
-                      });
-                  };
-                  setTimeout(resolve, 3000); // Timeout fallback
-                });
-              } catch (exactError) {
-                console.warn(
-                  `Failed with exact constraints: ${exactError.name} - ${exactError.message}`
-                );
-
-                // Try with basic constraints as fallback
-                console.log("Trying with basic video constraints");
-                const preferredConstraints = {
-                  video: true, // Just request any video source as fallback
-                  audio: false, // Explicitly disable audio to avoid permission issues
-                };
-
-                console.log("Using basic video constraints as fallback");
-
-                // Implement retry logic for preferred constraints
-                let stream;
-                let lastError;
-                let retryCount = 0;
-                const maxRetries = 2;
-
-                while (retryCount <= maxRetries) {
-                  try {
-                    if (retryCount > 0) {
-                      console.log(
-                        `Retry attempt ${retryCount} for preferred constraints...`
-                      );
-                      statusElement.textContent = `Retrying camera (${retryCount}/${maxRetries})...`;
-                      // Add a small delay between retries
-                      await new Promise((resolve) => setTimeout(resolve, 1000));
-                    }
-
-                    stream = await navigator.mediaDevices.getUserMedia(
-                      preferredConstraints
-                    );
-                    console.log(
-                      "Successfully got stream with preferred constraints"
-                    );
-                    this.videoElement.srcObject = stream;
-                    break; // Success, exit the retry loop
-                  } catch (err) {
-                    lastError = err;
-                    console.warn(
-                      `Preferred constraints attempt ${retryCount} failed:`,
-                      err
-                    );
-                    retryCount++;
-
-                    if (retryCount > maxRetries) {
-                      console.error(
-                        "All retry attempts failed with preferred constraints"
-                      );
-                      throw lastError; // Throw the last error to trigger the basic fallback
-                    }
-                  }
-                }
-
-                await new Promise((resolve) => {
-                  this.videoElement.onloadedmetadata = () => {
-                    this.videoElement
-                      .play()
-                      .then(resolve)
-                      .catch((e) => {
-                        console.error("Error playing video:", e);
-                        resolve(); // Continue anyway
-                      });
-                  };
-                  setTimeout(resolve, 3000);
-                });
-              }
-
-              // Log the actual tracks we got
-              const tracks = this.videoElement.srcObject.getVideoTracks();
-              if (tracks.length > 0) {
-                const settings = tracks[0].getSettings();
-                console.log("Camera settings after switch:", settings);
-                // Some browsers/devices report the actual facingMode
-                if (settings.facingMode) {
-                  console.log(`Actual facing mode: ${settings.facingMode}`);
-                  // Update our tracking of the current mode to match reality
-                  this.currentFacingMode = settings.facingMode;
-                } else {
-                  // If facingMode isn't reported, try to determine from track label
-                  const trackLabel = tracks[0].label.toLowerCase();
-                  console.log(`Camera track label: ${trackLabel}`);
-                  if (
-                    trackLabel.includes("front") ||
-                    trackLabel.includes("user") ||
-                    trackLabel.includes("selfie")
-                  ) {
-                    console.log("Detected front camera from track label");
-                    this.currentFacingMode = "user";
-                  } else if (
-                    trackLabel.includes("back") ||
-                    trackLabel.includes("environment") ||
-                    trackLabel.includes("rear")
-                  ) {
-                    console.log("Detected back camera from track label");
-                    this.currentFacingMode = "environment";
-                  }
-                  // Otherwise keep the requested mode
-                }
-
-                // Update button text based on the ACTUAL camera mode - when in 'user' mode, offer to switch to back camera
-                btn.textContent = this.currentFacingMode.includes("user")
-                  ? "📷 Switch to Back Camera"
-                  : "📷 Switch to Front Camera";
-              }
-
-              // Setup camera processing
-              statusElement.textContent = "Setting up processing...";
-
-              // Update MediaPipe selfieMode based on current camera mode
-              if (this.hands) {
-                // For back camera (environment), we need to set selfieMode to false
-                // For front camera (user), we need to set selfieMode to true
-                const isFrontCamera = this.currentFacingMode.includes("user");
-                await this.hands.setOptions({
-                  maxNumHands: 1,
-                  modelComplexity: 1,
-                  minDetectionConfidence: 0.7,
-                  minTrackingConfidence: 0.5,
-                  // Set selfieMode based on camera mode - true for front camera, false for back camera
-                  selfieMode: isFrontCamera,
-                });
-                console.log(
-                  `MediaPipe selfieMode updated to: ${isFrontCamera} for ${this.currentFacingMode} camera`
-                );
-              }
-
-              await this.setupCameraProcessing();
-              console.log("Camera processing setup complete");
-
-              statusElement.textContent = "Camera switched successfully!";
-              setTimeout(() => {
-                statusElement.style.display = "none";
-              }, 2000);
-              return; // Success, exit the function
-            } catch (cameraError) {
-              // Handle specific camera errors
-              console.error(
-                `Camera error: ${cameraError.name} - ${cameraError.message}`
-              );
-              statusElement.textContent = "Camera error. Trying basic mode...";
-
-              // Try with very basic constraints as last resort
-              try {
-                // Store the target facing mode we were trying to switch to
-                const targetFacingMode = this.currentFacingMode;
-                console.log(
-                  `Attempting basic fallback after failing to get ${targetFacingMode} camera`
-                );
-
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-
-                // Reset currentFacingMode to ensure startCamera doesn't try to use the same constraints
-                // that just failed
-                this.currentFacingMode = "user"; // Default to front camera for fallback
-
-                // Use startCamera which has better fallback logic
-                await this.startCamera();
-
-                // At this point, startCamera should have updated currentFacingMode based on what we actually got
-
-                // The currentFacingMode should now be updated by startCamera
-                console.log(
-                  `Basic mode camera detected as: ${this.currentFacingMode}`
-                );
-
-                // Log if we couldn't get the camera we wanted
-                if (targetFacingMode !== this.currentFacingMode) {
-                  console.log(
-                    `Note: Tried to switch to ${targetFacingMode} camera, but got ${this.currentFacingMode} camera instead`
-                  );
-                }
-
-                // Update MediaPipe selfieMode based on the actual camera we got
-                if (this.hands) {
-                  const isFrontCamera = this.currentFacingMode.includes("user");
-                  await this.hands.setOptions({
-                    maxNumHands: 1,
-                    modelComplexity: 1,
-                    minDetectionConfidence: 0.7,
-                    minTrackingConfidence: 0.5,
-                    selfieMode: isFrontCamera,
-                  });
-                  console.log(
-                    `MediaPipe selfieMode set to ${isFrontCamera} in basic mode`
-                  );
-                }
-
-                this.setupCameraProcessing();
-
-                // Update button text based on actual camera mode
-                btn.textContent = this.currentFacingMode.includes("user")
-                  ? "📷 Switch to Back Camera"
-                  : "📷 Switch to Front Camera";
-                statusElement.textContent = "Camera active (basic mode)";
-
-                setTimeout(() => {
-                  statusElement.style.display = "none";
-                }, 2000);
-                return;
-              } catch (basicError) {
-                console.error(
-                  "Failed even with basic constraints:",
-                  basicError
-                );
-                throw basicError; // Give up and let the outer catch handle it
-              }
-            }
-          } catch (error) {
-            console.error(
-              `Failed to switch camera: ${error.name} - ${error.message}`
-            );
-            statusElement.textContent = `Camera error: ${error.name}. Reverting...`;
-
-            // Handle specific errors with user-friendly messages
-            if (error.name === "NotReadableError") {
-              alert(
-                "Camera is being used by another application. Please close other camera apps and try again."
-              );
-            } else if (error.name === "NotAllowedError") {
-              alert(
-                "Camera access was denied. Please allow camera access and try again."
-              );
-            } else if (error.name === "NotFoundError") {
-              alert("No camera found. Please check your device and try again.");
-            } else if (error.name === "OverconstrainedError") {
-              alert(
-                "Your device doesn't support switching between front and back cameras."
-              );
-            }
-
-            // Revert camera mode on failure
-            this.currentFacingMode = originalFacingMode;
-            console.log(`Reverting to ${this.currentFacingMode} camera`);
-
-            // Try to restart with previous mode
-            try {
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-              await this.startCamera();
-              this.setupCameraProcessing();
-              statusElement.textContent = "Reverted to previous camera";
-              btn.textContent = this.currentFacingMode.includes("user")
-                ? "📷 Switch to Back Camera"
-                : "📷 Switch to Front Camera";
-            } catch (restartError) {
-              console.error(
-                `Failed to restart camera: ${restartError.name} - ${restartError.message}`
-              );
-              statusElement.textContent =
-                "Camera switching failed. Please reload the page.";
-              btn.textContent = "❌ Camera Error";
-            }
-          } finally {
-            btn.disabled = false;
-
-            // Remove status element after a delay if it's still in the DOM
-            setTimeout(() => {
-              statusElement.style.display = "none";
-            }, 3000);
-          }
-        }
-
         resetGame() {
           this.score = 0;
           this.gameTime = 0;
@@ -2264,360 +1839,18 @@
           this.bubbles = [];
           this.particles = [];
 
-          // Reset hand status indicator
           const handStatus = document.getElementById("hand-status-indicator");
           if (handStatus) {
             handStatus.textContent = "Active";
-            handStatus.style.color = "#4ECDC4"; // Teal for active
+            handStatus.style.color = "#4ECDC4";
           }
 
           document.getElementById("score").textContent = "0";
           document.getElementById("game-time").textContent = "0:00";
           document.getElementById("balloon-count").textContent = "0";
         }
-
-        async showCameraInfo() {
-          try {
-            // Create or get the camera-list element
-            let cameraListElement = document.getElementById("camera-list");
-            if (!cameraListElement) {
-              cameraListElement = document.createElement("div");
-              cameraListElement.id = "camera-list";
-              cameraListElement.style.position = "absolute";
-              cameraListElement.style.top = "50%";
-              cameraListElement.style.left = "50%";
-              cameraListElement.style.transform = "translate(-50%, -50%)";
-              cameraListElement.style.backgroundColor = "rgba(0, 0, 0, 0.8)";
-              cameraListElement.style.color = "white";
-              cameraListElement.style.padding = "20px";
-              cameraListElement.style.borderRadius = "10px";
-              cameraListElement.style.zIndex = "1000";
-              cameraListElement.style.maxWidth = "80%";
-              cameraListElement.style.maxHeight = "80%";
-              cameraListElement.style.overflow = "auto";
-              cameraListElement.style.boxShadow = "0 0 10px rgba(0, 0, 0, 0.5)";
-              document.body.appendChild(cameraListElement);
-            } else {
-              // If it exists, clear previous content and show it
-              cameraListElement.innerHTML = "";
-              cameraListElement.style.display = "block";
-            }
-
-            // Add title and close button
-            const titleBar = document.createElement("div");
-            titleBar.style.display = "flex";
-            titleBar.style.justifyContent = "space-between";
-            titleBar.style.alignItems = "center";
-            titleBar.style.marginBottom = "15px";
-
-            const title = document.createElement("h3");
-            title.textContent = "Camera Information";
-            title.style.margin = "0";
-
-            const closeButton = document.createElement("button");
-            closeButton.textContent = "✕";
-            closeButton.style.background = "none";
-            closeButton.style.border = "none";
-            closeButton.style.color = "white";
-            closeButton.style.fontSize = "20px";
-            closeButton.style.cursor = "pointer";
-            closeButton.onclick = () => {
-              cameraListElement.style.display = "none";
-            };
-
-            titleBar.appendChild(title);
-            titleBar.appendChild(closeButton);
-            cameraListElement.appendChild(titleBar);
-
-            // Add loading indicator
-            const loadingText = document.createElement("p");
-            loadingText.textContent = "Detecting video devices...";
-            cameraListElement.appendChild(loadingText);
-
-            // Get list of video devices
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(
-              (device) => device.kind === "videoinput"
-            );
-
-            // Remove loading indicator
-            cameraListElement.removeChild(loadingText);
-
-            // Display current camera info
-            const currentCameraInfo = document.createElement("div");
-            currentCameraInfo.style.marginBottom = "15px";
-            currentCameraInfo.style.padding = "10px";
-            currentCameraInfo.style.backgroundColor =
-              "rgba(255, 255, 255, 0.1)";
-            currentCameraInfo.style.borderRadius = "5px";
-
-            const currentTitle = document.createElement("h4");
-            currentTitle.textContent = "Current Camera";
-            currentTitle.style.marginTop = "0";
-            currentCameraInfo.appendChild(currentTitle);
-
-            const facingModeInfo = document.createElement("p");
-            facingModeInfo.textContent = `Facing Mode: ${this.currentFacingMode}`;
-            facingModeInfo.style.margin = "5px 0";
-            currentCameraInfo.appendChild(facingModeInfo);
-
-            if (this.videoElement) {
-              const resolutionInfo = document.createElement("p");
-              resolutionInfo.textContent = `Resolution: ${this.videoElement.videoWidth}x${this.videoElement.videoHeight}`;
-              resolutionInfo.style.margin = "5px 0";
-              currentCameraInfo.appendChild(resolutionInfo);
-            }
-
-            cameraListElement.appendChild(currentCameraInfo);
-
-            // Display available video devices with selection buttons
-            const devicesTitle = document.createElement("h4");
-            devicesTitle.textContent = "Available Video Devices";
-            cameraListElement.appendChild(devicesTitle);
-
-            if (videoDevices.length === 0) {
-              const noDevices = document.createElement("p");
-              noDevices.textContent = "No video devices detected";
-              cameraListElement.appendChild(noDevices);
-            } else {
-              const devicesList = document.createElement("ul");
-              devicesList.style.listStyleType = "none";
-              devicesList.style.padding = "0";
-
-              videoDevices.forEach((device, index) => {
-                const deviceItem = document.createElement("li");
-                deviceItem.style.padding = "10px";
-                deviceItem.style.margin = "5px 0";
-                deviceItem.style.backgroundColor = "rgba(255, 255, 255, 0.1)";
-                deviceItem.style.borderRadius = "5px";
-                deviceItem.style.display = "flex";
-                deviceItem.style.justifyContent = "space-between";
-                deviceItem.style.alignItems = "center";
-
-                // Determine if this is likely a front or back camera based on label
-                const deviceLabel = device.label || `Camera ${index + 1}`;
-                const isFrontFacing =
-                  deviceLabel.toLowerCase().includes("front") ||
-                  deviceLabel.toLowerCase().includes("user") ||
-                  deviceLabel.toLowerCase().includes("selfie");
-                const isBackFacing =
-                  deviceLabel.toLowerCase().includes("back") ||
-                  deviceLabel.toLowerCase().includes("environment") ||
-                  deviceLabel.toLowerCase().includes("rear");
-
-                // Create device info div
-                const deviceInfo = document.createElement("div");
-                deviceInfo.style.flex = "1";
-
-                // Add camera info with facing direction if detected
-                let facingText = "";
-                if (isFrontFacing) {
-                  facingText = ", facing front";
-                } else if (isBackFacing) {
-                  facingText = ", facing back";
-                }
-
-                deviceInfo.textContent = `${
-                  index + 1
-                }. ${deviceLabel} (ID: ${device.deviceId.substring(
-                  0,
-                  8
-                )}...${facingText})`;
-                deviceItem.appendChild(deviceInfo);
-
-                // Create test button
-                const testButton = document.createElement("button");
-                testButton.textContent = "Test";
-                testButton.style.backgroundColor = "#4CAF50";
-                testButton.style.color = "white";
-                testButton.style.border = "none";
-                testButton.style.borderRadius = "4px";
-                testButton.style.padding = "5px 10px";
-                testButton.style.cursor = "pointer";
-                testButton.style.marginLeft = "10px";
-
-                // Add click event to test this specific camera
-                testButton.onclick = async () => {
-                  try {
-                    // Show status
-                    const statusMsg = document.createElement("div");
-                    statusMsg.textContent = `Testing camera ${index + 1}...`;
-                    statusMsg.style.color = "#FFA500";
-                    statusMsg.style.marginTop = "5px";
-                    deviceItem.appendChild(statusMsg);
-
-                    // Stop current camera
-                    if (this.videoElement.srcObject) {
-                      const tracks = this.videoElement.srcObject.getTracks();
-                      tracks.forEach((track) => track.stop());
-                      this.videoElement.srcObject = null;
-                    }
-
-                    // Stop MediaPipe camera if running
-                    if (this.camera) {
-                      await this.camera.stop();
-                      this.camera = null;
-                    }
-
-                    // Try to access the selected camera by deviceId
-                    const stream = await navigator.mediaDevices.getUserMedia({
-                      video: {
-                        deviceId: { exact: device.deviceId },
-                        width: { ideal: 640, max: 1280 },
-                        height: { ideal: 480, max: 720 },
-                      },
-                      audio: false,
-                    });
-
-                    // Set the stream to video element
-                    this.videoElement.srcObject = stream;
-
-                    // Update status
-                    statusMsg.textContent = `Camera ${index + 1} active`;
-                    statusMsg.style.color = "#4ECDC4";
-
-                    // Update current facing mode based on detection
-                    if (isFrontFacing) {
-                      this.currentFacingMode = "user";
-                    } else if (isBackFacing) {
-                      this.currentFacingMode = "environment";
-                    }
-
-                    // Setup camera processing again
-                    await this.setupCameraProcessing();
-
-                    // Update camera info
-                    facingModeInfo.textContent = `Facing Mode: ${this.currentFacingMode}`;
-
-                    // Find the resolution info element in the current camera info section
-                    const resolutionInfoElements =
-                      cameraListElement.querySelectorAll("p");
-                    let resolutionInfo = null;
-                    for (const element of resolutionInfoElements) {
-                      if (element.textContent.startsWith("Resolution:")) {
-                        resolutionInfo = element;
-                        break;
-                      }
-                    }
-
-                    // Update resolution if element found, otherwise create it
-                    if (resolutionInfo && this.videoElement) {
-                      resolutionInfo.textContent = `Resolution: ${this.videoElement.videoWidth}x${this.videoElement.videoHeight}`;
-                    } else if (this.videoElement) {
-                      // If not found, create a new resolution info element
-                      const newResolutionInfo = document.createElement("p");
-                      newResolutionInfo.textContent = `Resolution: ${this.videoElement.videoWidth}x${this.videoElement.videoHeight}`;
-                      newResolutionInfo.style.margin = "5px 0";
-                      // Add it after facing mode info
-                      facingModeInfo.parentNode.insertBefore(
-                        newResolutionInfo,
-                        facingModeInfo.nextSibling
-                      );
-                    }
-
-                    // Update button text
-                    const switchBtn = document.getElementById("switchCamera");
-                    if (switchBtn) {
-                      switchBtn.textContent = this.currentFacingMode.includes(
-                        "user"
-                      )
-                        ? "📷 Switch to Back Camera"
-                        : "📷 Switch to Front Camera";
-                      switchBtn.disabled = false;
-                    }
-
-                    // Add a select button
-                    const selectBtn = document.createElement("button");
-                    selectBtn.textContent = "Use This Camera";
-                    selectBtn.style.backgroundColor = "#2196F3";
-                    selectBtn.style.color = "white";
-                    selectBtn.style.border = "none";
-                    selectBtn.style.borderRadius = "4px";
-                    selectBtn.style.padding = "5px 10px";
-                    selectBtn.style.cursor = "pointer";
-                    selectBtn.style.marginLeft = "10px";
-                    selectBtn.onclick = () => {
-                      // Save this device ID for future use
-                      localStorage.setItem(
-                        "preferredCameraId",
-                        device.deviceId
-                      );
-                      localStorage.setItem("preferredCameraLabel", deviceLabel);
-
-                      // Close the camera info panel
-                      cameraListElement.style.display = "none";
-
-                      // Show confirmation
-                      const confirmationMsg = document.createElement("div");
-                      confirmationMsg.textContent = `Camera ${
-                        index + 1
-                      } selected as default`;
-                      confirmationMsg.style.position = "fixed";
-                      confirmationMsg.style.top = "50%";
-                      confirmationMsg.style.left = "50%";
-                      confirmationMsg.style.transform = "translate(-50%, -50%)";
-                      confirmationMsg.style.backgroundColor = "rgba(0,0,0,0.7)";
-                      confirmationMsg.style.color = "white";
-                      confirmationMsg.style.padding = "10px 20px";
-                      confirmationMsg.style.borderRadius = "20px";
-                      confirmationMsg.style.zIndex = "1000";
-                      document.body.appendChild(confirmationMsg);
-
-                      setTimeout(() => {
-                        document.body.removeChild(confirmationMsg);
-                      }, 2000);
-                    };
-
-                    // Add select button next to test button
-                    deviceItem.appendChild(selectBtn);
-                  } catch (error) {
-                    console.error(`Error testing camera ${index + 1}:`, error);
-                    const statusMsg =
-                      deviceItem.querySelector("div:last-child");
-                    if (statusMsg && statusMsg.style.color === "#FFA500") {
-                      statusMsg.textContent = `Error: ${error.message}`;
-                      statusMsg.style.color = "#FF5252";
-                    } else {
-                      const errorMsg = document.createElement("div");
-                      errorMsg.textContent = `Error: ${error.message}`;
-                      errorMsg.style.color = "#FF5252";
-                      errorMsg.style.marginTop = "5px";
-                      deviceItem.appendChild(errorMsg);
-                    }
-                  }
-                };
-
-                deviceItem.appendChild(testButton);
-                devicesList.appendChild(deviceItem);
-              });
-
-              cameraListElement.appendChild(devicesList);
-            }
-
-            // Add device count summary
-            const summary = document.createElement("p");
-            summary.style.marginTop = "15px";
-            summary.style.fontWeight = "bold";
-            summary.textContent = `Total video devices detected: ${videoDevices.length}`;
-            cameraListElement.appendChild(summary);
-
-            // Auto-hide after 15 seconds
-            setTimeout(() => {
-              if (
-                cameraListElement &&
-                document.body.contains(cameraListElement)
-              ) {
-                cameraListElement.style.display = "none";
-              }
-            }, 15000);
-          } catch (error) {
-            console.error("Error showing camera info:", error);
-            alert("Could not retrieve camera information: " + error.message);
-          }
-        }
       }
 
-      // Start the game when page loads
       document.addEventListener("DOMContentLoaded", () => {
         new BubblePopGame();
       });
